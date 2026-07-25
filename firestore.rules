@@ -2,51 +2,40 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isSignedIn() {
-      return request.auth != null;
+    function isOwner() {
+      return request.auth != null && request.auth.uid == "owner";
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    // All collections: owner can read (for the dashboard), no client writes.
+    // Every write happens server-side via Cloud Functions (Admin SDK bypasses rules).
+    match /system/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
-    match /users/{userId} {
-      allow read: if isOwner(userId);
-      allow create, update: if isOwner(userId);
-      allow delete: if false;
-
-      match /reflections/{reflectionId} {
-        allow read, create, update, delete: if isOwner(userId);
-      }
-
-      match /notes/{noteId} {
-        allow read, create, update, delete: if isOwner(userId);
-      }
-
-      match /{document=**} {
-        allow read, write: if false;
-      }
+    match /positions/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
-    match /sessions/{sessionId} {
-      allow create: if isSignedIn() &&
-        request.resource.data.userId == request.auth.uid;
-      allow read, update, delete: if isSignedIn() &&
-        resource.data.userId == request.auth.uid;
+    match /trades/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
 
-      match /messages/{messageId} {
-        allow create: if isSignedIn() &&
-          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
-        allow read, update, delete: if isSignedIn() &&
-          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
-      }
+    match /missedEntries/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
 
-      match /notes/{noteId} {
-        allow create: if isSignedIn() &&
-          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
-        allow read, update, delete: if isSignedIn() &&
-          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
-      }
+    match /dailyStats/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    match /errors/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
     match /{document=**} {

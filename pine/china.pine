@@ -1,0 +1,141 @@
+//@version=6
+strategy("AY VWAP Trend China v1", overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=19000, commission_type=strategy.commission.percent, commission_value=0, calc_on_every_tick=false, process_orders_on_close=true, margin_long=0, margin_short=0)
+
+// ── ADJUSTABLE SETTINGS ──
+tpDollars      = input.float(40.0, "Take Profit (index points)", minval=0.5, step=1)
+slDollars      = input.float(40.0, "Stop Loss (index points)", minval=0.5, step=1)
+minSlopePerHr  = input.float(10.0, "Min VWAP Slope to Enter ($ per hour)", minval=0, step=0.5)
+slopeHours     = input.float(0.5, "Slope Lookback (hours)", minval=0.5, step=0.5)
+maxCandleMove  = input.float(30.0, "Max Single-Candle Range ($)", minval=0, step=1)
+shockBarsInput = input.int(4, "Shock Window (bars, incl. trigger)", minval=1)
+minVolume      = input.float(40.0, "Min Volume on Entry Bar (contracts)", minval=0, step=5)
+cooldownHours  = input.float(4.0, "Cooldown After Exit (hours)", minval=0, step=0.5)
+entryStartHr   = input.int(0, "Entry Window Start Hour (ET)", minval=0, maxval=23)
+entryStartMin  = input.int(0, "Entry Window Start Minute (ET)", minval=0, maxval=59)
+entryCutoffHr  = input.int(12, "Entry Cutoff Hour (ET)", minval=0, maxval=23)
+entryCutoffMin = input.int(0, "Entry Cutoff Minute (ET)", minval=0, maxval=59)
+flatHourET     = input.int(15, "Daily Flatten Hour (ET)", minval=0, maxval=23)
+flatMinuteET   = input.int(30, "Daily Flatten Minute (ET)", minval=0, maxval=59)
+bandMult       = input.float(2.0, "VWAP Band StdDev Multiplier", step=0.1)
+showDebug      = input.bool(true, "Show entry/blocked labels")
+webhookSecret  = input.string("", "Webhook Secret (Firebase)", group="Webhook")
+
+// NOTE: max-hold rule removed — entries stop at noon ET and everything flattens at 3:30pm ET,
+// so the longest possible hold is ~15.5h. Restore it if those windows are ever widened.
+
+// ── VWAP + BANDS (TradingView default session anchor) ──
+[vwapVal, upperBand, lowerBand] = ta.vwap(hlc3, timeframe.change("D"), bandMult)
+
+colPurple = #5D3FD3
+plot(vwapVal, "VWAP", color=colPurple, linewidth=2)
+pU = plot(upperBand, "VWAP Upper (+2σ)", color=colPurple, linewidth=1)
+pL = plot(lowerBand, "VWAP Lower (−2σ)", color=colPurple, linewidth=1)
+fill(pU, pL, color=color.new(colPurple, 88))
+
+// ── VWAP SLOPE ($/hr, signed; lookback = 0.5 hr = 1 bar on 30m) ──
+barsPerHour = 60.0 / (timeframe.in_seconds() / 60.0)
+slopeBars = math.max(1, math.round(slopeHours * barsPerHour))
+
+var int barsInSession = 0
+barsInSession := timeframe.change("D") ? 0 : barsInSession + 1
+
+slopeReady = barsInSession >= slopeBars
+slopeSigned = slopeReady ? (vwapVal - vwapVal[slopeBars]) / slopeHours : 0.0
+
+trendUp   = slopeReady and slopeSigned >= minSlopePerHr
+trendDown = slopeReady and slopeSigned <= -minSlopePerHr
+
+// ── SHOCK CANDLE FILTER ──
+// No candle in the last `shockBarsInput` bars (trigger bar + the ones before it)
+// may have a high-low range greater than maxCandleMove.
+biggestCandle = ta.highest(high - low, shockBarsInput)
+shockOK = biggestCandle <= maxCandleMove
+
+// ── VOLUME FILTER: entry bar must trade at least minVolume contracts ──
+volOK = volume >= minVolume
+
+// ── TIME FILTERS (Eastern Time, evaluated at BAR CLOSE = the moment of the fill) ──
+etHour = hour(time_close, "America/New_York")
+etMin  = minute(time_close, "America/New_York")
+etDow  = dayofweek(time_close, "America/New_York")
+minsET = etHour * 60 + etMin
+
+startMins  = entryStartHr * 60 + entryStartMin
+cutoffMins = entryCutoffHr * 60 + entryCutoffMin
+
+inEntryWindow  = minsET >= startMins and minsET <= cutoffMins
+inWeekendBlock = etDow == dayofweek.saturday or etDow == dayofweek.sunday
+timeOK = inEntryWindow and not inWeekendBlock
+
+// ── COOLDOWN AFTER EXIT (clock-based) ──
+posOpen = strategy.position_size != 0
+justClosed = strategy.closedtrades > strategy.closedtrades[1]
+
+var float lastExitTime = na
+if justClosed
+    lastExitTime := time
+
+inCooldown = not na(lastExitTime) and (time - lastExitTime) < cooldownHours * 3600000
+
+// ── SIGNAL LOGIC (state-based: any qualifying close enters) ──
+longEntry  = trendUp and timeOK and shockOK and volOK and not posOpen and not inCooldown
+shortEntry = trendDown and timeOK and shockOK and volOK and not posOpen and not inCooldown
+
+// ── DAILY FLATTEN at 3:30pm ET ──
+pastFlatten = minsET >= flatHourET * 60 + flatMinuteET
+
+// ── WEBHOOK PAYLOADS (Firebase) ──
+flattenSide = strategy.position_size > 0 ? "long" : "short"
+longAlertMsg = '{"secret":"' + webhookSecret + '","asset":"CHINA","action":"entry","side":"long","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
+shortAlertMsg = '{"secret":"' + webhookSecret + '","asset":"CHINA","action":"entry","side":"short","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
+flattenAlertMsg = '{"secret":"' + webhookSecret + '","asset":"CHINA","action":"flatten","side":"' + flattenSide + '"}'
+
+if posOpen and pastFlatten
+    strategy.close_all(comment="Daily Flatten 3:30pm ET", alert_message=flattenAlertMsg)
+
+// ── DEBUG LABELS ──
+slopeTxt = "slope $" + str.tostring(slopeSigned, "#.#") + "/hr"
+
+blockedNow = (trendUp or trendDown) and not (longEntry or shortEntry)
+shockBlockNow = blockedNow and timeOK and not posOpen and not inCooldown and not shockOK
+shockBlockNew = shockBlockNow and not shockBlockNow[1]
+volBlockNow = blockedNow and timeOK and shockOK and not posOpen and not inCooldown and not volOK
+volBlockNew = volBlockNow and not volBlockNow[1]
+posBlockNow = blockedNow and timeOK and shockOK and volOK and posOpen
+posBlockNew = posBlockNow and not posBlockNow[1]
+cdBlockNow = blockedNow and timeOK and shockOK and volOK and not posOpen and inCooldown
+cdBlockNew = cdBlockNow and not cdBlockNow[1]
+timeBlockNow = blockedNow and not timeOK
+timeBlockNew = timeBlockNow and not timeBlockNow[1]
+
+if showDebug and trendUp and longEntry
+    label.new(bar_index, low, "LONG ✓ " + slopeTxt, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if showDebug and trendDown and shortEntry
+    label.new(bar_index, high, "SHORT ✓ " + slopeTxt, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+if showDebug and shockBlockNew
+    label.new(bar_index, trendUp ? low : high, "BLOCKED: candle > $" + str.tostring(maxCandleMove, "#") + " (range $" + str.tostring(biggestCandle, "#.#") + ")", style=trendUp ? label.style_label_up : label.style_label_down, color=color.purple, textcolor=color.white, size=size.small)
+
+if showDebug and volBlockNew
+    label.new(bar_index, trendUp ? low : high, "BLOCKED: volume " + str.tostring(volume, "#") + " < " + str.tostring(minVolume, "#"), style=trendUp ? label.style_label_up : label.style_label_down, color=color.blue, textcolor=color.white, size=size.small)
+
+if showDebug and timeBlockNew
+    label.new(bar_index, trendUp ? low : high, inWeekendBlock ? "BLOCKED: weekend" : "BLOCKED: outside entry window", style=trendUp ? label.style_label_up : label.style_label_down, color=color.gray, textcolor=color.white, size=size.small)
+
+if showDebug and posBlockNew
+    label.new(bar_index, trendUp ? low : high, "BLOCKED: position open", style=trendUp ? label.style_label_up : label.style_label_down, color=color.gray, textcolor=color.white, size=size.small)
+
+if showDebug and cdBlockNew
+    label.new(bar_index, trendUp ? low : high, "BLOCKED: cooldown", style=trendUp ? label.style_label_up : label.style_label_down, color=color.orange, textcolor=color.white, size=size.small)
+
+// ── ORDERS ──
+if longEntry
+    strategy.entry("Long", strategy.long, alert_message=longAlertMsg)
+
+if shortEntry
+    strategy.entry("Short", strategy.short, alert_message=shortAlertMsg)
+
+// ── TP/SL ──
+strategy.exit("Long Exit", from_entry="Long", profit = tpDollars / syminfo.mintick, loss = slDollars / syminfo.mintick)
+strategy.exit("Short Exit", from_entry="Short", profit = tpDollars / syminfo.mintick, loss = slDollars / syminfo.mintick)

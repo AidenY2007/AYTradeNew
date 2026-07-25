@@ -1,0 +1,83 @@
+import { onCall, HttpsError } from "firebase-functions/https";
+import { OWNER_UID, ASSETS, Asset } from "./admin";
+import { configDocRef, DEFAULT_CONFIG } from "./config";
+import { AssetTradingWindow } from "./types";
+
+function requireOwner(auth: { uid: string } | undefined) {
+  if (!auth || auth.uid !== OWNER_UID) {
+    throw new HttpsError("permission-denied", "Not authorized.");
+  }
+}
+
+interface SetDailyLossPctInput {
+  pct: number;
+}
+
+export const setDailyLossPct = onCall<SetDailyLossPctInput>(async (request) => {
+  requireOwner(request.auth);
+  const { pct } = request.data;
+  if (typeof pct !== "number" || pct <= 0 || pct > 100) {
+    throw new HttpsError("invalid-argument", "pct must be between 0 and 100.");
+  }
+  await configDocRef().set({ dailyLossKillSwitchPct: pct }, { merge: true });
+  return { ok: true };
+});
+
+interface SetLiveModeInput {
+  liveMode: boolean;
+}
+
+export const setLiveMode = onCall<SetLiveModeInput>(async (request) => {
+  requireOwner(request.auth);
+  const { liveMode } = request.data;
+  if (typeof liveMode !== "boolean") {
+    throw new HttpsError("invalid-argument", "liveMode must be boolean.");
+  }
+  await configDocRef().set({ liveMode }, { merge: true });
+  return { ok: true };
+});
+
+interface SetTradingWindowInput {
+  asset: Asset;
+  window: AssetTradingWindow;
+}
+
+export const setTradingWindow = onCall<SetTradingWindowInput>(
+  async (request) => {
+    requireOwner(request.auth);
+    const { asset, window } = request.data;
+    if (!ASSETS.includes(asset)) {
+      throw new HttpsError("invalid-argument", "Invalid asset.");
+    }
+    const required: (keyof AssetTradingWindow)[] = [
+      "entryStartMins",
+      "entryCutoffMins",
+      "flattenMins",
+      "cooldownHours",
+      "weekendBlocked",
+    ];
+    for (const key of required) {
+      if (window[key] === undefined) {
+        throw new HttpsError("invalid-argument", `Missing ${key}.`);
+      }
+    }
+    await configDocRef().set(
+      { tradingWindow: { [asset]: window } },
+      { merge: true }
+    );
+    return { ok: true };
+  }
+);
+
+// Resets every asset's trading window back to the values hardcoded in
+// config.ts (which mirror each Pine script's current default inputs) —
+// a single verifiable revert after any temporary manual test changes,
+// rather than relying on typing values back in by hand.
+export const resetTradingWindowsToDefault = onCall(async (request) => {
+  requireOwner(request.auth);
+  await configDocRef().set(
+    { tradingWindow: DEFAULT_CONFIG.tradingWindow },
+    { merge: true }
+  );
+  return { ok: true, tradingWindow: DEFAULT_CONFIG.tradingWindow };
+});
