@@ -1,0 +1,56 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId);
+      allow delete: if false;
+
+      match /reflections/{reflectionId} {
+        allow read, create, update, delete: if isOwner(userId);
+      }
+
+      match /notes/{noteId} {
+        allow read, create, update, delete: if isOwner(userId);
+      }
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    match /sessions/{sessionId} {
+      allow create: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if isSignedIn() &&
+        resource.data.userId == request.auth.uid;
+
+      match /messages/{messageId} {
+        allow create: if isSignedIn() &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
+        allow read, update, delete: if isSignedIn() &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
+      }
+
+      match /notes/{noteId} {
+        allow create: if isSignedIn() &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
+        allow read, update, delete: if isSignedIn() &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId == request.auth.uid;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
