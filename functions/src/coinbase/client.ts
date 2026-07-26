@@ -332,3 +332,12 @@ export async function getOpenPositions(
 ): Promise<unknown> {
   return request(creds, "GET", "/api/v3/brokerage/cfm/positions");
 }
+
+// One-off diagnostic: this is a percentage-of-notional fee tier (spot/perp
+// style) and may not represent the flat per-contract commission that
+// futures/CDE products actually charge — checking to confirm either way.
+export async function getTransactionSummary(
+  creds: CoinbaseCredentials
+): Promise<unknown> {
+  return request(creds, "GET", "/api/v3/brokerage/transaction_summary");
+}

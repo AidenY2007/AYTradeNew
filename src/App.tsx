@@ -11,9 +11,9 @@ function AppShell() {
   const { logout } = useAuth();
   const nav = [
     { to: "/", label: "Overview", end: true },
+    { to: "/analysis", label: "Analysis" },
     { to: "/trades", label: "Trade Log" },
     { to: "/missed", label: "Missed Entries" },
-    { to: "/analysis", label: "Analysis" },
     { to: "/settings", label: "Settings" },
   ];
 

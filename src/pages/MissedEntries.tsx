@@ -1,6 +1,7 @@
 import { orderBy, useCollection } from "../hooks";
 import type { MissedEntryDoc } from "../types";
 import { ASSET_LABELS } from "../types";
+import { formatTimeET } from "../format";
 
 const REASON_LABELS: Record<string, string> = {
   position_already_open: "Position already open",
@@ -10,11 +11,6 @@ const REASON_LABELS: Record<string, string> = {
   invalid_payload: "Invalid webhook payload",
   market_session_closed: "Market session closed",
 };
-
-function formatTime(ts?: { seconds: number } | null) {
-  if (!ts) return "—";
-  return new Date(ts.seconds * 1000).toLocaleString();
-}
 
 export function MissedEntriesPage() {
   const { items, loading } = useCollection<MissedEntryDoc>("missedEntries", [
@@ -41,7 +37,7 @@ export function MissedEntriesPage() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-                  <td>{formatTime(item.timestamp)}</td>
+                  <td>{formatTimeET(item.timestamp)}</td>
                   <td>{ASSET_LABELS[item.asset] ?? item.asset}</td>
                   <td>
                     <span className="pill amber">

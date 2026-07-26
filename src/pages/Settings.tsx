@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
-import { useDoc } from "../hooks";
+import { useDoc, useCollection } from "../hooks";
 import {
   setDailyLossPct,
   setLiveMode,
   setTradingWindow,
+  setFeePerContract,
   resetTradingWindowsToDefault,
   verifyCoinbaseAccess,
   listFuturesProducts,
+  testLiveShortEntry,
+  closeTestPosition,
 } from "../api";
-import type { Asset, AssetTradingWindow, SystemConfig } from "../types";
+import type { Asset, AssetTradingWindow, PositionDoc, SystemConfig } from "../types";
 import { ASSET_LABELS } from "../types";
 
 const ASSETS: Asset[] = ["btc", "tech", "ai", "china"];
@@ -105,6 +108,41 @@ function WindowEditor({
   );
 }
 
+function FeeEditor({ asset, amount }: { asset: Asset; amount: number }) {
+  const [draft, setDraft] = useState(amount);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setDraft(amount), [amount]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await setFeePerContract(asset, draft);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="settings-field" style={{ marginBottom: 0 }}>
+      <label>{ASSET_LABELS[asset]} — round-trip $/contract</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="number"
+          step="0.1"
+          min="0"
+          value={draft}
+          onChange={(e) => setDraft(Number(e.target.value))}
+          style={{ width: 100 }}
+        />
+        <button className="settings-save" onClick={save} disabled={saving}>
+          {saving ? "…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { data: config } = useDoc<SystemConfig>("system/config");
   const [lossPct, setLossPct] = useState<number | null>(null);
@@ -114,6 +152,10 @@ export function SettingsPage() {
   const [productsResult, setProductsResult] = useState<string | null>(null);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const { items: allPositions } = useCollection<PositionDoc>("positions", []);
+  const [testTradeBusy, setTestTradeBusy] = useState(false);
+  const [testTradeError, setTestTradeError] = useState<string | null>(null);
+  const openPosition = allPositions.find((p) => p.status === "open") ?? null;
 
   useEffect(() => {
     if (config && lossPct === null) setLossPct(config.dailyLossKillSwitchPct);
@@ -154,6 +196,31 @@ export function SettingsPage() {
     }
   }
 
+  async function enterTestTrade() {
+    if (!window.confirm("Are u sure u want to enter?")) return;
+    setTestTradeBusy(true);
+    setTestTradeError(null);
+    try {
+      await testLiveShortEntry();
+    } catch (err) {
+      setTestTradeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestTradeBusy(false);
+    }
+  }
+
+  async function closeTestTrade() {
+    setTestTradeBusy(true);
+    setTestTradeError(null);
+    try {
+      await closeTestPosition();
+    } catch (err) {
+      setTestTradeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestTradeBusy(false);
+    }
+  }
+
   async function runListProducts() {
     setLoadingProducts(true);
     setProductsResult(null);
@@ -171,29 +238,32 @@ export function SettingsPage() {
     <div>
       <h2 className="page-title">Settings</h2>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-label">Daily Loss Kill Switch</div>
-        <div className="settings-field">
-          <label>Trigger at % of account balance lost in a day</label>
-          <input
-            type="number"
-            step="1"
-            value={lossPct ?? ""}
-            onChange={(e) => setLossPct(Number(e.target.value))}
-          />
+      <div className="grid grid-2" style={{ marginBottom: 16 }}>
+        <div className="card">
+          <div className="card-label">Daily Loss Kill Switch</div>
+          <div className="settings-field">
+            <label>Trigger at % of account balance lost in a day</label>
+            <input
+              type="number"
+              step="1"
+              value={lossPct ?? ""}
+              onChange={(e) => setLossPct(Number(e.target.value))}
+            />
+          </div>
+          <button className="settings-save" onClick={saveLossPct} disabled={savingPct}>
+            {savingPct ? "Saving…" : "Save"}
+          </button>
         </div>
-        <button className="settings-save" onClick={saveLossPct} disabled={savingPct}>
-          {savingPct ? "Saving…" : "Save"}
-        </button>
-      </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="toggle-row" style={{ borderBottom: "none" }}>
-          <span className="toggle-label">Live mode (real Coinbase orders)</span>
-          <button
-            className={`switch ${config?.liveMode ? "on" : ""}`}
-            onClick={() => setLiveMode(!config?.liveMode)}
-          />
+        <div className="card">
+          <div className="card-label">Trading Mode</div>
+          <div className="toggle-row" style={{ borderBottom: "none" }}>
+            <span className="toggle-label">Live mode (real Coinbase orders)</span>
+            <button
+              className={`switch ${config?.liveMode ? "on" : ""}`}
+              onClick={() => setLiveMode(!config?.liveMode)}
+            />
+          </div>
         </div>
       </div>
 
@@ -207,6 +277,25 @@ export function SettingsPage() {
         ASSETS.map((asset) => (
           <WindowEditor key={asset} asset={asset} window={config.tradingWindow[asset]} />
         ))}
+
+      <h3 style={{ margin: "24px 0 12px" }}>Fees</h3>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <p style={{ fontSize: 13, color: "var(--text-dim)", margin: "0 0 14px" }}>
+          Round-trip commission per contract, charged once per position.
+          Changing a rate only affects positions entered afterward — already
+          closed positions keep the rate that was in effect when they opened.
+        </p>
+        <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+          {config &&
+            ASSETS.map((asset) => (
+              <FeeEditor
+                key={asset}
+                asset={asset}
+                amount={config.feesPerContract[asset]}
+              />
+            ))}
+        </div>
+      </div>
 
       <div className="card" style={{ marginTop: 24 }}>
         <div className="card-label">Coinbase Access Check</div>
@@ -257,6 +346,42 @@ export function SettingsPage() {
           >
             {productsResult}
           </pre>
+        )}
+      </div>
+
+      <div className="card" style={{ marginTop: 16, marginBottom: 24 }}>
+        <div className="card-label">Test Live Trade</div>
+        <p style={{ fontSize: 13, color: "var(--text-dim)", margin: "0 0 12px" }}>
+          Places one real short contract on BTC Nano Perp (0.01 BTC notional)
+          directly on Coinbase — real money, independent of the dry-run
+          toggle and bypassing kill switches and trading-window checks. No
+          take-profit/stop-loss is attached; use Close Position to exit.
+        </p>
+        {openPosition ? (
+          <button
+            className="settings-save"
+            style={{ background: "var(--red)" }}
+            onClick={closeTestTrade}
+            disabled={testTradeBusy}
+          >
+            {testTradeBusy
+              ? "Closing…"
+              : `Close Position (${ASSET_LABELS[openPosition.asset]} ${openPosition.side.toUpperCase()})`}
+          </button>
+        ) : (
+          <button
+            className="settings-save"
+            style={{ background: "var(--red)" }}
+            onClick={enterTestTrade}
+            disabled={testTradeBusy}
+          >
+            {testTradeBusy ? "Placing…" : "Place Test Short — 1 Contract BTC (LIVE)"}
+          </button>
+        )}
+        {testTradeError && (
+          <div style={{ color: "var(--red)", fontSize: 13, marginTop: 10 }}>
+            {testTradeError}
+          </div>
         )}
       </div>
     </div>

@@ -259,6 +259,8 @@ async function handleEntry(
     asset,
     side: payload.side,
     size: Number(size),
+    contractSize: product.contractSize,
+    feePerContract: config.feesPerContract[asset],
     leverage,
     entryPrice,
     entryTime: Timestamp.now(),
@@ -267,6 +269,7 @@ async function handleEntry(
     status: "open",
     mode,
     pnl: null,
+    fee: null,
     bracketOrderId,
     entryOrderId,
   };

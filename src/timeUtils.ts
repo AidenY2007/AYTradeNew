@@ -1,10 +1,11 @@
 import type { AssetTradingWindow } from "./types";
 
-export function nowMinsET(): { minsET: number; weekday: string } {
+export function nowSecondsET(): { secondsET: number; weekday: string } {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     hour: "numeric",
     minute: "numeric",
+    second: "numeric",
     hour12: false,
     weekday: "short",
   }).formatToParts(new Date());
@@ -12,15 +13,21 @@ export function nowMinsET(): { minsET: number; weekday: string } {
   let hour = Number(get("hour"));
   if (hour === 24) hour = 0;
   const minute = Number(get("minute"));
-  return { minsET: hour * 60 + minute, weekday: get("weekday") };
+  const second = Number(get("second"));
+  return { secondsET: hour * 3600 + minute * 60 + second, weekday: get("weekday") };
 }
 
-export function formatMins(mins: number): string {
-  const h = Math.floor(mins / 60)
+export function formatSecs(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600)
     .toString()
     .padStart(2, "0");
-  const m = (mins % 60).toString().padStart(2, "0");
-  return `${h}:${m}`;
+  const m = Math.floor((totalSeconds % 3600) / 60)
+    .toString()
+    .padStart(2, "0");
+  const s = Math.floor(totalSeconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${h}:${m}:${s}`;
 }
 
 const WEEKEND = new Set(["Sat", "Sun"]);
@@ -29,32 +36,40 @@ export function windowStatus(window: AssetTradingWindow): {
   isOpen: boolean;
   label: string;
 } {
-  const { minsET, weekday } = nowMinsET();
+  const { secondsET, weekday } = nowSecondsET();
+  const entryStartSecs = window.entryStartMins * 60;
+  const entryCutoffSecs = window.entryCutoffMins * 60;
   const isWeekend = window.weekendBlocked && WEEKEND.has(weekday);
   const inEntry =
-    !isWeekend &&
-    minsET >= window.entryStartMins &&
-    minsET <= window.entryCutoffMins;
+    !isWeekend && secondsET >= entryStartSecs && secondsET <= entryCutoffSecs;
 
   if (inEntry) {
-    const remaining = window.entryCutoffMins - minsET;
-    return { isOpen: true, label: `entry window closes in ${formatMins(remaining)}` };
+    const remaining = entryCutoffSecs - secondsET;
+    return { isOpen: true, label: `entry window closes in ${formatSecs(remaining)}` };
   }
   if (isWeekend) {
     return { isOpen: false, label: "weekend — blocked" };
   }
-  if (minsET < window.entryStartMins) {
+  if (secondsET < entryStartSecs) {
     return {
       isOpen: false,
-      label: `opens in ${formatMins(window.entryStartMins - minsET)}`,
+      label: `opens in ${formatSecs(entryStartSecs - secondsET)}`,
     };
   }
   return { isOpen: false, label: "closed for today" };
 }
 
+// yyyy-mm-dd in ET — used to bucket "today" consistently regardless of the
+// viewer's own browser timezone.
+export function dateStringET(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(date);
+}
+
 export function minsUntilFlatten(window: AssetTradingWindow): string {
-  const { minsET } = nowMinsET();
-  const remaining = window.flattenMins - minsET;
+  const { secondsET } = nowSecondsET();
+  const remaining = window.flattenMins * 60 - secondsET;
   if (remaining <= 0) return "past flatten time";
-  return formatMins(remaining);
+  return formatSecs(remaining);
 }

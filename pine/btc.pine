@@ -78,8 +78,13 @@ if justClosed
 inCooldown = not na(lastExitTime) and (time - lastExitTime) < cooldownHours * 3600000
 
 // ── SIGNAL LOGIC (state-based: any qualifying close enters) ──
-longEntry  = trendUp and timeOK and shockOK and volOK and not posOpen and not inCooldown
-shortEntry = trendDown and timeOK and shockOK and volOK and not posOpen and not inCooldown
+// timeOK/inCooldown intentionally left out of the gate below — entry
+// timing, weekend blocking, and cooldown are now enforced server-side
+// (Firebase) so they're editable from the dashboard without republishing
+// this script. timeOK/inCooldown are still computed above for the debug
+// labels only.
+longEntry  = trendUp and shockOK and volOK and not posOpen
+shortEntry = trendDown and shockOK and volOK and not posOpen
 
 // ── DAILY FLATTEN at 3:30pm ET ──
 pastFlatten = minsET >= flatHourET * 60 + flatMinuteET

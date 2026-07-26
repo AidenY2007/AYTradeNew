@@ -22,10 +22,35 @@ export function resetTradingWindowsToDefault() {
   return httpsCallable(functions, "resetTradingWindowsToDefault")({});
 }
 
+export function setFeePerContract(asset: string, amount: number) {
+  return httpsCallable(functions, "setFeePerContract")({ asset, amount });
+}
+
 export function verifyCoinbaseAccess() {
   return httpsCallable(functions, "verifyCoinbaseAccess")({});
 }
 
 export function listFuturesProducts() {
   return httpsCallable(functions, "listFuturesProducts")({});
+}
+
+export interface SystemState {
+  balance: { futuresBuyingPower: number; totalUsdBalance: number } | null;
+  sessionOpen: Record<string, boolean> | null;
+  markPrice: number | null;
+}
+
+export function getSystemState() {
+  return httpsCallable<Record<string, never>, SystemState>(
+    functions,
+    "getSystemState"
+  )({});
+}
+
+export function testLiveShortEntry() {
+  return httpsCallable(functions, "testLiveShortEntry")({});
+}
+
+export function closeTestPosition() {
+  return httpsCallable(functions, "closeTestPosition")({});
 }

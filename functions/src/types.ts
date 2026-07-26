@@ -26,6 +26,9 @@ export interface SystemConfig {
   dailyLossKillSwitchPct: number;
   liveMode: boolean;
   tradingWindow: Record<Asset, AssetTradingWindow>;
+  // Round-trip commission per contract, in dollars — Coinbase futures charge
+  // a flat per-contract fee rather than a percentage of notional.
+  feesPerContract: Record<Asset, number>;
 }
 
 export type PositionStatus = "open" | "closed";
@@ -35,6 +38,14 @@ export interface PositionDoc {
   asset: Asset;
   side: Side;
   size: number;
+  // Notional value of one contract in the underlying's own units (e.g. 0.01
+  // BTC for the nano contract) — required to compute correct PnL, since
+  // price moves apply per unit of underlying, not per contract.
+  contractSize: number;
+  // Round-trip fee per contract at entry time (a snapshot of
+  // config.feesPerContract[asset] so later rate changes don't retroactively
+  // alter already-closed positions' recorded economics).
+  feePerContract: number;
   leverage: number;
   entryPrice: number;
   entryTime: FirebaseFirestore.Timestamp;
@@ -43,6 +54,7 @@ export interface PositionDoc {
   status: PositionStatus;
   mode: TradingMode;
   pnl: number | null;
+  fee: number | null;
   bracketOrderId: string | null;
   entryOrderId: string | null;
 }

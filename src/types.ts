@@ -24,6 +24,7 @@ export interface SystemConfig {
   dailyLossKillSwitchPct: number;
   liveMode: boolean;
   tradingWindow: Record<Asset, AssetTradingWindow>;
+  feesPerContract: Record<Asset, number>;
 }
 
 export interface Timestamped {
@@ -35,6 +36,8 @@ export interface PositionDoc {
   asset: Asset;
   side: Side;
   size: number;
+  contractSize: number;
+  feePerContract: number;
   leverage: number;
   entryPrice: number;
   entryTime: Timestamped;
@@ -43,6 +46,7 @@ export interface PositionDoc {
   status: PositionStatus;
   mode: TradingMode;
   pnl: number | null;
+  fee: number | null;
 }
 
 export type MissedEntryReason =

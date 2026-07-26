@@ -2,11 +2,7 @@ import { useMemo, useState } from "react";
 import { orderBy, useCollection } from "../hooks";
 import type { Asset, PositionDoc, TradingMode } from "../types";
 import { ASSET_LABELS } from "../types";
-
-function formatTime(ts?: { seconds: number } | null) {
-  if (!ts) return "—";
-  return new Date(ts.seconds * 1000).toLocaleString();
-}
+import { pnlColor, pnlSign, formatTimeET } from "../format";
 
 export function TradeLogPage() {
   const { items: positions, loading } = useCollection<PositionDoc>(
@@ -73,6 +69,7 @@ export function TradeLogPage() {
                 <th>Exit</th>
                 <th>Entry Time</th>
                 <th>Exit Time</th>
+                <th>Fee</th>
                 <th>PnL</th>
                 <th>Mode</th>
                 <th>Status</th>
@@ -86,12 +83,13 @@ export function TradeLogPage() {
                   <td>{p.size}</td>
                   <td>{p.entryPrice}</td>
                   <td>{p.exitPrice ?? "—"}</td>
-                  <td>{formatTime(p.entryTime)}</td>
-                  <td>{formatTime(p.exitTime)}</td>
-                  <td className={p.pnl != null ? (p.pnl >= 0 ? "" : "") : ""}>
+                  <td>{formatTimeET(p.entryTime)}</td>
+                  <td>{formatTimeET(p.exitTime)}</td>
+                  <td>{p.fee != null ? p.fee.toFixed(2) : "—"}</td>
+                  <td>
                     {p.pnl != null ? (
-                      <span style={{ color: p.pnl >= 0 ? "var(--green)" : "var(--red)" }}>
-                        {p.pnl >= 0 ? "+" : ""}
+                      <span style={{ color: pnlColor(p.pnl) }}>
+                        {pnlSign(p.pnl)}
                         {p.pnl.toFixed(2)}
                       </span>
                     ) : (

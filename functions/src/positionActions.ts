@@ -1,5 +1,5 @@
 import { Timestamp } from "firebase-admin/firestore";
-import { db, Asset } from "./admin";
+import { db, Asset, ASSETS } from "./admin";
 import { SystemConfig, PositionDoc, TradeDoc } from "./types";
 import {
   PRODUCT_IDS,
@@ -41,12 +41,16 @@ export async function closeOpenPosition(
   const position = snap.docs[0].data() as PositionDoc;
   const productId = PRODUCT_IDS[asset];
   const closingSide = position.side === "long" ? "SELL" : "BUY";
-  const mode = config.liveMode ? "live" : "dry_run";
+  // Whether to place a real closing order must follow what the position
+  // actually is, not the current global toggle — flipping liveMode off
+  // after a real position was opened must never cause a real position to
+  // be silently "closed" via simulation while it's still open on Coinbase.
+  const mode = position.mode;
 
   let exitPrice = position.entryPrice;
   let exitOrderId: string | null = null;
 
-  if (config.liveMode) {
+  if (mode === "live") {
     if (position.bracketOrderId) {
       await cancelOrder(creds, position.bracketOrderId);
     }
@@ -64,16 +68,24 @@ export async function closeOpenPosition(
     exitPrice = product.price;
   }
 
-  const pnl =
+  // PnL scales with contractSize — each contract represents that many units
+  // of the underlying, not a 1:1 dollar-per-point move.
+  const grossPnl =
     (position.side === "long"
       ? exitPrice - position.entryPrice
-      : position.entryPrice - exitPrice) * position.size;
+      : position.entryPrice - exitPrice) *
+    position.size *
+    position.contractSize;
+
+  const fee = (position.feePerContract ?? 0) * position.size;
+  const pnl = grossPnl - fee;
 
   await positionRef.update({
     status: "closed",
     exitPrice,
     exitTime: Timestamp.now(),
     pnl,
+    fee,
   });
 
   const tradeDoc: TradeDoc = {
@@ -111,10 +123,15 @@ export async function closeOpenPosition(
   );
 
   if (killSwitchTriggered && !statsData?.killSwitchTriggered) {
+    // Global is a master switch (see killSwitch.ts) — keep every asset's
+    // toggle consistent with it here too, not just on manual global flips.
+    const assetUpdates = Object.fromEntries(
+      ASSETS.map((a) => [a, true])
+    ) as Record<Asset, boolean>;
     await db
       .collection("system")
       .doc("config")
-      .set({ globalKillSwitch: true }, { merge: true });
+      .set({ globalKillSwitch: true, assetKillSwitches: assetUpdates }, { merge: true });
   }
 
   return true;

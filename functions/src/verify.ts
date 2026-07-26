@@ -6,6 +6,7 @@ import {
   getBalanceSummary,
   getProduct,
   listProducts,
+  getTransactionSummary,
 } from "./coinbase/client";
 
 function requireOwner(auth: { uid: string } | undefined) {
@@ -31,6 +32,13 @@ export const verifyCoinbaseAccess = onCall(
       results.balance = await getBalanceSummary(creds);
     } catch (err) {
       results.balanceError = err instanceof Error ? err.message : String(err);
+    }
+
+    try {
+      results.transactionSummary = await getTransactionSummary(creds);
+    } catch (err) {
+      results.transactionSummaryError =
+        err instanceof Error ? err.message : String(err);
     }
 
     for (const asset of ASSETS) {

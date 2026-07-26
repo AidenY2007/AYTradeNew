@@ -69,6 +69,32 @@ export const setTradingWindow = onCall<SetTradingWindowInput>(
   }
 );
 
+interface SetFeePerContractInput {
+  asset: Asset;
+  amount: number;
+}
+
+// Updates the round-trip per-contract fee for one asset. Only affects
+// positions entered after this change — each position snapshots the rate
+// in effect at entry time, so past positions' recorded PnL never changes.
+export const setFeePerContract = onCall<SetFeePerContractInput>(
+  async (request) => {
+    requireOwner(request.auth);
+    const { asset, amount } = request.data;
+    if (!ASSETS.includes(asset)) {
+      throw new HttpsError("invalid-argument", "Invalid asset.");
+    }
+    if (typeof amount !== "number" || amount < 0) {
+      throw new HttpsError("invalid-argument", "amount must be >= 0.");
+    }
+    await configDocRef().set(
+      { feesPerContract: { [asset]: amount } },
+      { merge: true }
+    );
+    return { ok: true };
+  }
+);
+
 // Resets every asset's trading window back to the values hardcoded in
 // config.ts (which mirror each Pine script's current default inputs) —
 // a single verifiable revert after any temporary manual test changes,

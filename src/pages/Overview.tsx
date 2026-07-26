@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { orderBy, useCollection, useDoc } from "../hooks";
-import { setKillSwitch, setLiveMode } from "../api";
+import { setKillSwitch, getSystemState, type SystemState } from "../api";
 import type {
   Asset,
   ErrorDoc,
@@ -8,22 +8,25 @@ import type {
   SystemConfig,
 } from "../types";
 import { ASSET_LABELS } from "../types";
-import { minsUntilFlatten, windowStatus } from "../timeUtils";
+import { minsUntilFlatten, windowStatus, dateStringET } from "../timeUtils";
+import { pnlColor, pnlSign } from "../format";
 
 const ASSETS: Asset[] = ["btc", "tech", "ai", "china"];
 
 function Toggle({
   on,
   danger,
+  lg,
   onClick,
 }: {
   on: boolean;
   danger?: boolean;
+  lg?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
-      className={`switch ${danger ? "" : "accent"} ${on ? "on" : ""}`}
+      className={`switch ${danger ? "" : "accent"} ${lg ? "switch-lg" : ""} ${on ? "on" : ""}`}
       onClick={onClick}
       aria-pressed={on}
     />
@@ -39,9 +42,67 @@ export function OverviewPage() {
     orderBy("time", "desc"),
   ]);
   const [busy, setBusy] = useState<string | null>(null);
+  const [systemState, setSystemState] = useState<SystemState | null>(null);
+
+  // Ticks once a second so the session timer's seconds actually count down
+  // live instead of being frozen at whatever second the page last rendered.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Balance and market-session status both require live Coinbase calls, so
+  // they're polled on a slow interval rather than every second.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const result = await getSystemState();
+        if (!cancelled) setSystemState(result.data);
+      } catch {
+        // Keep showing the last known state rather than clearing it.
+      }
+    }
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const openPosition = openPositions.find((p) => p.status === "open") ?? null;
   const lastErrors = recentErrors.slice(0, 3);
+
+  // Today's profit = realized PnL of positions closed today (ET) + the
+  // currently open position's unrealized PnL, with its round-trip fee
+  // already subtracted even though only the entry leg has technically
+  // happened — it's a certain cost, not a hypothetical one.
+  const todayStr = dateStringET(new Date());
+  const realizedToday = openPositions
+    .filter(
+      (p) =>
+        p.status === "closed" &&
+        p.exitTime &&
+        dateStringET(new Date(p.exitTime.seconds * 1000)) === todayStr &&
+        p.pnl != null
+    )
+    .reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+
+  let unrealizedOpen = 0;
+  if (openPosition && systemState?.markPrice != null) {
+    const priceDiff =
+      openPosition.side === "long"
+        ? systemState.markPrice - openPosition.entryPrice
+        : openPosition.entryPrice - systemState.markPrice;
+    const grossUnrealized =
+      priceDiff * openPosition.size * openPosition.contractSize;
+    const fee = openPosition.feePerContract * openPosition.size;
+    unrealizedOpen = grossUnrealized - fee;
+  }
+
+  const todaysProfit = realizedToday + unrealizedOpen;
 
   async function toggleGlobal() {
     if (!config) return;
@@ -63,14 +124,23 @@ export function OverviewPage() {
     }
   }
 
-  async function toggleLiveMode() {
-    if (!config) return;
-    setBusy("liveMode");
-    try {
-      await setLiveMode(!config.liveMode);
-    } finally {
-      setBusy(null);
+  // Priority order when multiple blocking reasons apply at once: kill
+  // switch first (most severe/systemic), then weekend blocked, then
+  // outside entry window (both handled internally by windowStatus, which
+  // already checks weekend before window), then market-session-closed last.
+  function pillFor(asset: Asset) {
+    if (!config) return { isOpen: false, label: "loading…" };
+    if (config.globalKillSwitch || config.assetKillSwitches[asset]) {
+      return { isOpen: false, label: "kill switch active" };
     }
+    const windowResult = windowStatus(config.tradingWindow[asset]);
+    if (!windowResult.isOpen) {
+      return windowResult;
+    }
+    if (systemState?.sessionOpen && systemState.sessionOpen[asset] === false) {
+      return { isOpen: false, label: "market session closed" };
+    }
+    return windowResult;
   }
 
   return (
@@ -84,13 +154,21 @@ export function OverviewPage() {
         </div>
       )}
 
-      <div className="grid grid-2" style={{ marginBottom: 16 }}>
+      <div className="grid grid-3" style={{ marginBottom: 16 }}>
         <div className="card">
           <div className="card-label">Current Position</div>
           {openPosition ? (
             <>
               <div className="card-value">
-                {ASSET_LABELS[openPosition.asset]} · {openPosition.side.toUpperCase()}
+                {ASSET_LABELS[openPosition.asset]} ·{" "}
+                <span
+                  style={{
+                    color:
+                      openPosition.side === "long" ? "var(--blue)" : "var(--yellow)",
+                  }}
+                >
+                  {openPosition.side.toUpperCase()}
+                </span>
               </div>
               <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 6 }}>
                 {openPosition.size} contracts @ {openPosition.entryPrice}
@@ -99,49 +177,57 @@ export function OverviewPage() {
               </div>
             </>
           ) : (
-            <div className="card-value" style={{ color: "var(--text-faint)" }}>
+            <div className="card-value" style={{ color: "var(--text)" }}>
               Flat
             </div>
           )}
         </div>
 
         <div className="card">
-          <div className="card-label">Trading Mode</div>
-          <div className="toggle-row" style={{ borderBottom: "none", padding: "4px 0" }}>
-            <span className="toggle-label">
-              {config?.liveMode ? "Live — real orders" : "Dry run — simulated"}
-            </span>
-            <Toggle
-              on={!!config?.liveMode}
-              onClick={toggleLiveMode}
-            />
+          <div className="card-label">Today's Profit</div>
+          <div className="card-value" style={{ color: pnlColor(todaysProfit) }}>
+            {pnlSign(todaysProfit)}
+            {todaysProfit.toFixed(2)}
           </div>
-          {busy === "liveMode" && (
-            <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Updating…</div>
+          {openPosition && systemState?.markPrice == null && (
+            <div style={{ color: "var(--text-faint)", fontSize: 12, marginTop: 6 }}>
+              open position pending mark price…
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-label">Account Balance</div>
+          {systemState?.balance ? (
+            <div className="card-value">
+              ${systemState.balance.totalUsdBalance.toFixed(2)}
+            </div>
+          ) : (
+            <div className="card-value" style={{ color: "var(--text-faint)" }}>
+              Loading…
+            </div>
           )}
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-label">Session Timer</div>
+      <div className="card session-timer-card" style={{ marginBottom: 16 }}>
+        <div className="card-label session-timer-label">Session Timer</div>
         {openPosition ? (
-          <div className="card-value">
+          <div className="session-timer-value">
             Flattens in {minsUntilFlatten(config?.tradingWindow[openPosition.asset] ?? DEFAULT_WINDOW)}
           </div>
         ) : (
-          <div className="grid grid-4" style={{ marginTop: 10 }}>
+          <div className="grid grid-4" style={{ marginTop: 16 }}>
             {ASSETS.map((asset) => {
-              const window = config?.tradingWindow[asset];
-              if (!window) return null;
-              const status = windowStatus(window);
+              const status = pillFor(asset);
               return (
                 <div key={asset}>
-                  <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  <div style={{ fontSize: 15, color: "var(--text-dim)" }}>
                     {ASSET_LABELS[asset]}
                   </div>
                   <div
-                    className={`pill ${status.isOpen ? "green" : "neutral"}`}
-                    style={{ marginTop: 4 }}
+                    className={`pill ${status.isOpen ? "green" : "red"} pill-lg`}
+                    style={{ marginTop: 6 }}
                   >
                     {status.label}
                   </div>
@@ -155,19 +241,23 @@ export function OverviewPage() {
       <div className="card">
         <div className="card-label">Kill Switches</div>
         <div className="toggle-row">
-          <span className="toggle-label">Global — stop all entries &amp; force-close</span>
+          <span className="toggle-label toggle-label-lg">
+            Global — stop all entries &amp; force-close
+          </span>
           <Toggle
             on={!!config?.globalKillSwitch}
             danger
+            lg
             onClick={toggleGlobal}
           />
         </div>
         {ASSETS.map((asset) => (
           <div className="toggle-row" key={asset}>
-            <span className="toggle-label">{ASSET_LABELS[asset]}</span>
+            <span className="toggle-label toggle-label-lg">{ASSET_LABELS[asset]}</span>
             <Toggle
               on={!!config?.assetKillSwitches[asset]}
               danger
+              lg
               onClick={() => toggleAsset(asset)}
             />
           </div>
