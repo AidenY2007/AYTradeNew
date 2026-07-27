@@ -56,7 +56,7 @@ export function windowStatus(window: AssetTradingWindow): {
       label: `opens in ${formatSecs(entryStartSecs - secondsET)}`,
     };
   }
-  return { isOpen: false, label: "closed for today" };
+  return { isOpen: false, label: "blocked — overnight" };
 }
 
 // yyyy-mm-dd in ET — used to bucket "today" consistently regardless of the

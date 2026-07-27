@@ -271,7 +271,7 @@ async function handleEntryLocked(
     return "blocked:market_session_closed";
   }
 
-  const balance = balanceSummary.futuresBuyingPower || balanceSummary.totalUsdBalance;
+  const balance = balanceSummary.futuresBuyingPower;
   const leverage = maxLeverageForSide(product, payload.side);
   const size = computeMaxContractsSize(
     balance,

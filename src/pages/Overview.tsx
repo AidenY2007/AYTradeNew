@@ -195,7 +195,7 @@ export function OverviewPage() {
           <div className="card-label">Account Balance</div>
           {systemState?.balance ? (
             <div className="card-value">
-              ${systemState.balance.totalUsdBalance.toFixed(2)}
+              ${systemState.balance.futuresBuyingPower.toFixed(2)}
             </div>
           ) : (
             <div className="card-value" style={{ color: "var(--text-faint)" }}>
