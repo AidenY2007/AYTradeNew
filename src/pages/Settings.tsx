@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useDoc, useCollection } from "../hooks";
 import {
-  setDailyLossPct,
+  setSessionLossLimit,
   setLiveMode,
   setTradingWindow,
   setFeePerContract,
@@ -145,7 +145,7 @@ function FeeEditor({ asset, amount }: { asset: Asset; amount: number }) {
 
 export function SettingsPage() {
   const { data: config } = useDoc<SystemConfig>("system/config");
-  const [lossPct, setLossPct] = useState<number | null>(null);
+  const [lossLimit, setLossLimit] = useState<number | null>(null);
   const [savingPct, setSavingPct] = useState(false);
   const [verifyResult, setVerifyResult] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -158,14 +158,14 @@ export function SettingsPage() {
   const openPosition = allPositions.find((p) => p.status === "open") ?? null;
 
   useEffect(() => {
-    if (config && lossPct === null) setLossPct(config.dailyLossKillSwitchPct);
-  }, [config, lossPct]);
+    if (config && lossLimit === null) setLossLimit(config.sessionLossLimitDollars);
+  }, [config, lossLimit]);
 
-  async function saveLossPct() {
-    if (lossPct == null) return;
+  async function saveLossLimit() {
+    if (lossLimit == null) return;
     setSavingPct(true);
     try {
-      await setDailyLossPct(lossPct);
+      await setSessionLossLimit(lossLimit);
     } finally {
       setSavingPct(false);
     }
@@ -240,17 +240,17 @@ export function SettingsPage() {
 
       <div className="grid grid-2" style={{ marginBottom: 16 }}>
         <div className="card">
-          <div className="card-label">Daily Loss Kill Switch</div>
+          <div className="card-label">Session Loss Kill Switch</div>
           <div className="settings-field">
-            <label>Trigger at % of account balance lost in a day</label>
+            <label>Trigger at $ session loss (realized + unrealized, fees included)</label>
             <input
               type="number"
-              step="1"
-              value={lossPct ?? ""}
-              onChange={(e) => setLossPct(Number(e.target.value))}
+              step="10"
+              value={lossLimit ?? ""}
+              onChange={(e) => setLossLimit(Number(e.target.value))}
             />
           </div>
-          <button className="settings-save" onClick={saveLossPct} disabled={savingPct}>
+          <button className="settings-save" onClick={saveLossLimit} disabled={savingPct}>
             {savingPct ? "Saving…" : "Save"}
           </button>
         </div>

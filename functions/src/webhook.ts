@@ -17,7 +17,7 @@ import {
   maxLeverageForSide,
   placeMarketOrder,
   placeBracketOrder,
-  getOrder,
+  waitForFill,
 } from "./coinbase/client";
 import { computeMaxContractsSize } from "./sizing";
 import { closeOpenPosition } from "./positionActions";
@@ -82,6 +82,34 @@ async function getLastExitTime(asset: Asset): Promise<Date | null> {
   return exitTime ? exitTime.toDate() : null;
 }
 
+// Guards against two entry webhooks arriving within milliseconds of each
+// other (observed in practice — TradingView can fire "Order fills only"
+// twice for what's logically one entry) both reading "no open position"
+// before either has finished writing one, which would place two real
+// orders. A Firestore transaction on this singleton doc makes the
+// check-and-claim atomic; the lock auto-expires after 60s in case a
+// request crashes mid-entry without releasing it, so a real failure can
+// never permanently block future entries.
+const entryLockRef = db.collection("system").doc("entryLock");
+
+async function acquireEntryLock(): Promise<boolean> {
+  return db.runTransaction(async (t) => {
+    const snap = await t.get(entryLockRef);
+    const data = snap.exists ? snap.data() : null;
+    const lockedAt = data?.lockedAt as Timestamp | undefined;
+    const isStale = lockedAt ? Date.now() - lockedAt.toMillis() > 60000 : false;
+    if (data?.locked && !isStale) {
+      return false;
+    }
+    t.set(entryLockRef, { locked: true, lockedAt: Timestamp.now() });
+    return true;
+  });
+}
+
+async function releaseEntryLock() {
+  await entryLockRef.set({ locked: false }, { merge: true });
+}
+
 async function getTodaysDailyStats() {
   const key = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
@@ -99,7 +127,20 @@ export const webhook = onRequest(
       return;
     }
 
-    const payload = req.body as Partial<WebhookPayload>;
+    // TradingView sends alert webhook bodies as Content-Type: text/plain,
+    // so Firebase's automatic JSON body-parsing (which only triggers for
+    // application/json) never runs — req.body arrives empty. Fall back to
+    // parsing the raw body ourselves.
+    let payload: Partial<WebhookPayload> | undefined;
+    if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
+      payload = req.body as Partial<WebhookPayload>;
+    } else if (req.rawBody) {
+      try {
+        payload = JSON.parse(req.rawBody.toString("utf8"));
+      } catch (err) {
+        logger.warn("Webhook body failed to parse as JSON", err);
+      }
+    }
 
     if (!payload || typeof payload.secret !== "string") {
       res.status(400).send("Bad request");
@@ -109,6 +150,13 @@ export const webhook = onRequest(
       logger.warn("Webhook received with invalid secret");
       res.status(401).send("Unauthorized");
       return;
+    }
+
+    // Pine sends the asset code uppercase ("BTC"), but our internal Asset
+    // type/ASSETS list is lowercase ("btc") — normalize before validating,
+    // otherwise every real signal fails this check silently.
+    if (typeof payload.asset === "string") {
+      payload.asset = payload.asset.toLowerCase() as Asset;
     }
 
     if (
@@ -161,6 +209,24 @@ async function handleEntry(
     return "blocked:kill_switch_active";
   }
 
+  const acquired = await acquireEntryLock();
+  if (!acquired) {
+    await logMissedEntry(asset, "position_already_open", payload);
+    return "blocked:position_already_open";
+  }
+  try {
+    return await handleEntryLocked(asset, payload, config, creds);
+  } finally {
+    await releaseEntryLock();
+  }
+}
+
+async function handleEntryLocked(
+  asset: Asset,
+  payload: Partial<WebhookPayload>,
+  config: Awaited<ReturnType<typeof getConfig>>,
+  creds: { apiKeyName: string; privateKeyPem: string }
+): Promise<string> {
   const { data: dailyStats } = await getTodaysDailyStats();
   if (dailyStats?.killSwitchTriggered) {
     await logMissedEntry(asset, "daily_loss_limit", payload);
@@ -234,7 +300,7 @@ async function handleEntry(
     const entryOrder = await placeMarketOrder(creds, productId, orderSide, size);
     entryOrderId = entryOrder.orderId;
 
-    const fill = await getOrder(creds, entryOrder.orderId);
+    const fill = await waitForFill(creds, entryOrder.orderId);
     entryPrice = fill.avgFilledPrice ?? product.price;
 
     const tpDollars = payload.tpDollars ?? 0;
@@ -270,6 +336,8 @@ async function handleEntry(
     mode,
     pnl: null,
     fee: null,
+    tpDollars: payload.tpDollars ?? null,
+    slDollars: payload.slDollars ?? null,
     bracketOrderId,
     entryOrderId,
   };
@@ -297,6 +365,20 @@ async function handleFlatten(
   config: Awaited<ReturnType<typeof getConfig>>,
   creds: { apiKeyName: string; privateKeyPem: string }
 ): Promise<string> {
-  const closed = await closeOpenPosition(asset, config, creds);
-  return closed ? `flattened:${config.liveMode ? "live" : "dry_run"}` : "no_open_position";
+  // Reuses the entry lock rather than a separate one: only one position
+  // exists system-wide at a time, so serializing every position-mutating
+  // action (entry or flatten) behind a single lock is sufficient and avoids
+  // the same double-fire race observed on entries (TradingView firing an
+  // alert twice within the same second) from placing two real closing
+  // orders back-to-back.
+  const acquired = await acquireEntryLock();
+  if (!acquired) {
+    return "blocked:action_in_progress";
+  }
+  try {
+    const closed = await closeOpenPosition(asset, config, creds);
+    return closed ? `flattened:${config.liveMode ? "live" : "dry_run"}` : "no_open_position";
+  } finally {
+    await releaseEntryLock();
+  }
 }

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { orderBy, useCollection } from "../hooks";
 import type { Asset, PositionDoc, TradingMode } from "../types";
 import { ASSET_LABELS } from "../types";
-import { pnlColor, pnlSign, formatTimeET } from "../format";
+import { pnlColor, pnlSign, formatTimeET, sideColor } from "../format";
 
 export function TradeLogPage() {
   const { items: positions, loading } = useCollection<PositionDoc>(
@@ -79,7 +79,9 @@ export function TradeLogPage() {
               {filtered.map((p) => (
                 <tr key={p.id}>
                   <td>{ASSET_LABELS[p.asset]}</td>
-                  <td style={{ textTransform: "uppercase" }}>{p.side}</td>
+                  <td style={{ textTransform: "uppercase", color: sideColor(p.side) }}>
+                    {p.side}
+                  </td>
                   <td>{p.size}</td>
                   <td>{p.entryPrice}</td>
                   <td>{p.exitPrice ?? "—"}</td>

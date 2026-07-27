@@ -21,7 +21,7 @@ export interface AssetTradingWindow {
 export interface SystemConfig {
   globalKillSwitch: boolean;
   assetKillSwitches: Record<Asset, boolean>;
-  dailyLossKillSwitchPct: number;
+  sessionLossLimitDollars: number;
   liveMode: boolean;
   tradingWindow: Record<Asset, AssetTradingWindow>;
   feesPerContract: Record<Asset, number>;

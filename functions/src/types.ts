@@ -23,7 +23,10 @@ export interface AssetTradingWindow {
 export interface SystemConfig {
   globalKillSwitch: boolean;
   assetKillSwitches: Record<Asset, boolean>;
-  dailyLossKillSwitchPct: number;
+  // Raw dollar amount — session PnL (realized trades today + unrealized
+  // mark-to-market of whatever's currently open, fees netted in) breaching
+  // this triggers the global kill switch. Stays on until manually cleared.
+  sessionLossLimitDollars: number;
   liveMode: boolean;
   tradingWindow: Record<Asset, AssetTradingWindow>;
   // Round-trip commission per contract, in dollars — Coinbase futures charge
@@ -55,6 +58,12 @@ export interface PositionDoc {
   mode: TradingMode;
   pnl: number | null;
   fee: number | null;
+  // From the entry signal. In live mode these only informed the real
+  // Coinbase bracket order placed at entry — Coinbase enforces TP/SL from
+  // there, not this field. In dry-run mode there's no real bracket order,
+  // so a scheduled watcher uses these to simulate the same behavior.
+  tpDollars: number | null;
+  slDollars: number | null;
   bracketOrderId: string | null;
   entryOrderId: string | null;
 }

@@ -9,19 +9,24 @@ function requireOwner(auth: { uid: string } | undefined) {
   }
 }
 
-interface SetDailyLossPctInput {
-  pct: number;
+interface SetSessionLossLimitInput {
+  amount: number;
 }
 
-export const setDailyLossPct = onCall<SetDailyLossPctInput>(async (request) => {
-  requireOwner(request.auth);
-  const { pct } = request.data;
-  if (typeof pct !== "number" || pct <= 0 || pct > 100) {
-    throw new HttpsError("invalid-argument", "pct must be between 0 and 100.");
+export const setSessionLossLimit = onCall<SetSessionLossLimitInput>(
+  async (request) => {
+    requireOwner(request.auth);
+    const { amount } = request.data;
+    if (typeof amount !== "number" || amount <= 0) {
+      throw new HttpsError("invalid-argument", "amount must be > 0.");
+    }
+    await configDocRef().set(
+      { sessionLossLimitDollars: amount },
+      { merge: true }
+    );
+    return { ok: true };
   }
-  await configDocRef().set({ dailyLossKillSwitchPct: pct }, { merge: true });
-  return { ok: true };
-});
+);
 
 interface SetLiveModeInput {
   liveMode: boolean;

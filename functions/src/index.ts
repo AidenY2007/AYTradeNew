@@ -6,9 +6,11 @@ export { webhook } from "./webhook";
 export { setKillSwitch, getSystemState } from "./killSwitch";
 export { resetDailyStats } from "./dailyLoss";
 export { flattenOverduePositions } from "./flattenScheduler";
+export { monitorSessionLoss } from "./sessionLossMonitor";
+export { watchSimulatedTpSl } from "./simulatedTpSlWatcher";
 export { login } from "./auth";
 export {
-  setDailyLossPct,
+  setSessionLossLimit,
   setLiveMode,
   setTradingWindow,
   setFeePerContract,

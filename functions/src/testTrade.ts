@@ -8,7 +8,7 @@ import {
   PRODUCT_IDS,
   getProduct,
   placeMarketOrder,
-  getOrder,
+  waitForFill,
 } from "./coinbase/client";
 import { PositionDoc, TradeDoc } from "./types";
 
@@ -52,7 +52,7 @@ export const testLiveShortEntry = onCall(
 
     const size = "1"; // exactly 1 contract = 0.01 BTC, fixed for this test
     const order = await placeMarketOrder(creds, productId, "SELL", size);
-    const fill = await getOrder(creds, order.orderId);
+    const fill = await waitForFill(creds, order.orderId);
     const entryPrice = fill.avgFilledPrice ?? product.price;
 
     const positionDoc: PositionDoc = {
@@ -70,6 +70,8 @@ export const testLiveShortEntry = onCall(
       mode: "live",
       pnl: null,
       fee: null,
+      tpDollars: null,
+      slDollars: null,
       bracketOrderId: null,
       entryOrderId: order.orderId,
     };

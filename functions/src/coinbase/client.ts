@@ -308,14 +308,46 @@ export async function getOrder(
     `/api/v3/brokerage/orders/historical/${orderId}`
   );
   const order = json.order ?? {};
+  // "0" is a valid non-empty string and therefore truthy — a naive truthy
+  // check here treats "not filled yet" as "filled at price 0". Parse first,
+  // then treat a non-positive result as not-yet-available.
+  const parsedPrice = order.average_filled_price
+    ? Number(order.average_filled_price)
+    : NaN;
+  const parsedSize = order.filled_size ? Number(order.filled_size) : NaN;
   return {
-    avgFilledPrice: order.average_filled_price
-      ? Number(order.average_filled_price)
-      : null,
-    filledSize: order.filled_size ? Number(order.filled_size) : null,
+    avgFilledPrice: parsedPrice > 0 ? parsedPrice : null,
+    filledSize: parsedSize > 0 ? parsedSize : null,
     status: order.status,
     raw: json,
   };
+}
+
+// Market orders usually fill within milliseconds, but the historical-order
+// endpoint doesn't always reflect the fill the instant the order call
+// returns. Poll briefly rather than trusting a single immediate read.
+export async function waitForFill(
+  creds: CoinbaseCredentials,
+  orderId: string,
+  maxAttempts = 6,
+  delayMs = 500
+): Promise<OrderFill> {
+  let lastFill: OrderFill = {
+    avgFilledPrice: null,
+    filledSize: null,
+    status: "UNKNOWN",
+    raw: null,
+  };
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    lastFill = await getOrder(creds, orderId);
+    if (lastFill.status === "FILLED" && lastFill.avgFilledPrice != null) {
+      return lastFill;
+    }
+    if (attempt < maxAttempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return lastFill;
 }
 
 export async function cancelOrder(

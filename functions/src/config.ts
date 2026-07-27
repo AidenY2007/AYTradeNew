@@ -49,7 +49,7 @@ const DEFAULT_FEES_PER_CONTRACT: Record<string, number> = {
 export const DEFAULT_CONFIG: SystemConfig = {
   globalKillSwitch: false,
   assetKillSwitches: { btc: false, tech: false, ai: false, china: false },
-  dailyLossKillSwitchPct: 40,
+  sessionLossLimitDollars: 400,
   liveMode: false,
   tradingWindow: DEFAULT_WINDOWS as SystemConfig["tradingWindow"],
   feesPerContract: DEFAULT_FEES_PER_CONTRACT as SystemConfig["feesPerContract"],

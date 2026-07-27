@@ -39,6 +39,21 @@ export const setKillSwitch = onCall<SetKillSwitchInput>(
         { globalKillSwitch: on, assetKillSwitches: assetUpdates },
         { merge: true }
       );
+      if (!on) {
+        // The session-loss trip (positionActions.ts / sessionLossMonitor.ts)
+        // sets dailyStats.killSwitchTriggered independently of
+        // config.globalKillSwitch, and webhook.ts blocks new entries on that
+        // flag directly. Without clearing it here too, manually turning the
+        // dashboard switch back off would look like it worked while entries
+        // stayed silently blocked until the next midnight-ET reset.
+        const key = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/New_York",
+        }).format(new Date());
+        await db
+          .collection("dailyStats")
+          .doc(key)
+          .set({ killSwitchTriggered: false }, { merge: true });
+      }
     } else {
       const current = await getConfig();
       const updatedAssetSwitches = {

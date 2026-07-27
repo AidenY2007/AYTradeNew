@@ -45,7 +45,7 @@ export function windowStatus(window: AssetTradingWindow): {
 
   if (inEntry) {
     const remaining = entryCutoffSecs - secondsET;
-    return { isOpen: true, label: `entry window closes in ${formatSecs(remaining)}` };
+    return { isOpen: true, label: `active — entry window closes in ${formatSecs(remaining)}` };
   }
   if (isWeekend) {
     return { isOpen: false, label: "weekend — blocked" };

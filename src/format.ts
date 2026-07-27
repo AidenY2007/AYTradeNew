@@ -7,6 +7,14 @@ export function pnlSign(value: number): string {
   return value > 0 ? "+" : "";
 }
 
+// Long/short color coding used sitewide (Overview's position widget, Trade
+// Log, Missed Entries).
+export function sideColor(side?: string | null): string {
+  if (side === "long") return "var(--blue)";
+  if (side === "short") return "var(--yellow)";
+  return "var(--text-dim)";
+}
+
 // The whole system runs on Eastern Time, so timestamps always display in ET
 // regardless of the viewer's own browser/OS timezone.
 export function formatTimeET(ts?: { seconds: number } | null): string {

@@ -9,7 +9,7 @@ import type {
 } from "../types";
 import { ASSET_LABELS } from "../types";
 import { minsUntilFlatten, windowStatus, dateStringET } from "../timeUtils";
-import { pnlColor, pnlSign } from "../format";
+import { pnlColor, pnlSign, sideColor } from "../format";
 
 const ASSETS: Asset[] = ["btc", "tech", "ai", "china"];
 
@@ -161,12 +161,7 @@ export function OverviewPage() {
             <>
               <div className="card-value">
                 {ASSET_LABELS[openPosition.asset]} ·{" "}
-                <span
-                  style={{
-                    color:
-                      openPosition.side === "long" ? "var(--blue)" : "var(--yellow)",
-                  }}
-                >
+                <span style={{ color: sideColor(openPosition.side) }}>
                   {openPosition.side.toUpperCase()}
                 </span>
               </div>

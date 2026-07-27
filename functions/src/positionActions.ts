@@ -7,7 +7,7 @@ import {
   getProduct,
   placeMarketOrder,
   cancelOrder,
-  getOrder,
+  waitForFill,
   CoinbaseCredentials,
 } from "./coinbase/client";
 
@@ -61,7 +61,7 @@ export async function closeOpenPosition(
       String(position.size)
     );
     exitOrderId = exitOrder.orderId;
-    const fill = await getOrder(creds, exitOrder.orderId);
+    const fill = await waitForFill(creds, exitOrder.orderId);
     exitPrice = fill.avgFilledPrice ?? position.entryPrice;
   } else {
     const product = await getProduct(creds, productId);
@@ -110,12 +110,16 @@ export async function closeOpenPosition(
     statsData?.balanceStart ?? balanceSummary?.totalUsdBalance ?? 0;
   const realizedPnl = (statsData?.realizedPnl ?? 0) + pnl;
 
-  // Daily-loss kill switch: if realized losses for the day breach the
-  // configured % of the day's starting balance, auto-disable new entries.
-  const lossPct = balanceStart > 0 ? (-realizedPnl / balanceStart) * 100 : 0;
+  // Session-loss kill switch: if realized losses for the session (today)
+  // breach the configured raw dollar amount, auto-disable new entries.
+  // Nothing open at this exact instant (this position just closed and the
+  // system only ever allows one at a time), so realized PnL alone is the
+  // complete session PnL here — the scheduled monitor covers the
+  // in-between case where a position is still open and unrealized.
+  const sessionLoss = -realizedPnl;
   const killSwitchTriggered =
     statsData?.killSwitchTriggered ||
-    lossPct >= config.dailyLossKillSwitchPct;
+    sessionLoss >= config.sessionLossLimitDollars;
 
   await statsRef.set(
     { balanceStart, realizedPnl, killSwitchTriggered },

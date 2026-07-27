@@ -10,8 +10,8 @@ export function setLiveMode(liveMode: boolean) {
   return httpsCallable(functions, "setLiveMode")({ liveMode });
 }
 
-export function setDailyLossPct(pct: number) {
-  return httpsCallable(functions, "setDailyLossPct")({ pct });
+export function setSessionLossLimit(amount: number) {
+  return httpsCallable(functions, "setSessionLossLimit")({ amount });
 }
 
 export function setTradingWindow(asset: string, window: AssetTradingWindow) {

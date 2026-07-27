@@ -1,0 +1,58 @@
+//@version=6
+strategy("AY TEST BTC 845pm Entry", overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0, calc_on_every_tick=true, process_orders_on_close=true, margin_long=0, margin_short=0)
+
+// ── PURPOSE ──
+// Minimal test signal to exercise the real webhook/server pipeline
+// (sizing, exchange-side bracket TP/SL, kill switches, timing checks)
+// without the real VWAP strategy's entry conditions. This script only
+// decides *that* it wants to enter once daily at a fixed ET time — actual
+// permission to enter is still enforced server-side against BTC's trading
+// window in the dashboard, same as the real scripts. Widen BTC's window
+// in Settings to cover the entry time below before testing.
+//
+// Unlike the 4 real strategies, this one uses calc_on_every_tick=true and
+// reads live `time` (not `time_close`) specifically so it fires at the
+// exact target time rather than waiting for a bar to close — the real
+// strategies intentionally don't do this (see the architecture notes in
+// btc.pine), but a test script whose whole point is exact-time entry needs
+// it.
+
+tpDollars     = input.float(40.0, "Take Profit ($ price move)", minval=0.5, step=1)
+slDollars     = input.float(40.0, "Stop Loss ($ price move)", minval=0.5, step=1)
+entryHourET   = input.int(20, "Entry Hour (ET, 24h)", minval=0, maxval=23)
+entryMinuteET = input.int(5, "Entry Minute (ET)", minval=0, maxval=59)
+webhookSecret = input.string("519031d5e6863d4f426fe1d87e6ccd4370e591890ace66c1", "Webhook Secret (Firebase)", group="Webhook")
+
+etHour = hour(time, "America/New_York")
+etMin  = minute(time, "America/New_York")
+etYear  = year(time, "America/New_York")
+etMonth = month(time, "America/New_York")
+etDay   = dayofmonth(time, "America/New_York")
+todayKey = etYear * 10000 + etMonth * 100 + etDay
+
+posOpen = strategy.position_size != 0
+
+// "At or past" rather than exact-equality, and a once-per-day guard rather
+// than bar-to-bar edge detection — with calc_on_every_tick=true, multiple
+// ticks can land within the same still-forming bar, so comparing against
+// the previous *bar* (`[1]`) isn't reliable at tick granularity. This
+// fires on the first tick at/after the target time each day, exactly once.
+var int lastEntryDayKey = na
+atOrPastTarget = etHour > entryHourET or (etHour == entryHourET and etMin >= entryMinuteET)
+notYetEnteredToday = na(lastEntryDayKey) or lastEntryDayKey != todayKey
+
+longEntry = atOrPastTarget and notYetEnteredToday and not posOpen
+
+longAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC","action":"entry","side":"long","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
+
+if longEntry
+    lastEntryDayKey := todayKey
+    strategy.entry("Long", strategy.long, alert_message=longAlertMsg)
+
+// Kept for TradingView's own backtest visualization only — real exits
+// happen via the Coinbase bracket order placed server-side at entry, and
+// via the scheduled server-side flattener using BTC's configured flatten
+// time, same safety net the real BTC script relies on.
+strategy.exit("Long Exit", from_entry="Long", profit=tpDollars / syminfo.mintick, loss=slDollars / syminfo.mintick)
+
+plot(posOpen ? 1 : 0, "Position Open (debug)", display=display.data_window)
