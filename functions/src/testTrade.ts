@@ -4,6 +4,7 @@ import { db, OWNER_UID, Asset } from "./admin";
 import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import {
   PRODUCT_IDS,
   getProduct,
@@ -117,7 +118,21 @@ export const closeTestPosition = onCall(
       apiKeyName: coinbaseApiKeyName.value(),
       privateKeyPem: coinbaseApiPrivateKey.value(),
     };
-    await closeOpenPosition(asset, config, creds);
+    // Shared with the scheduled close-touching jobs — a manual close here
+    // could otherwise race flattenOverduePositions/monitorSessionLoss on
+    // the exact same position.
+    const acquired = await acquireActionLock();
+    if (!acquired) {
+      throw new HttpsError(
+        "aborted",
+        "Another close is already in progress — try again in a moment."
+      );
+    }
+    try {
+      await closeOpenPosition(asset, config, creds);
+    } finally {
+      await releaseActionLock();
+    }
     return { ok: true };
   }
 );

@@ -3,6 +3,7 @@ import { db } from "./admin";
 import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import { PRODUCT_IDS, getProduct } from "./coinbase/client";
 import { PositionDoc } from "./types";
 
@@ -56,7 +57,17 @@ export const watchSimulatedTpSl = onSchedule(
 
     if (!hitTp && !hitSl) return;
 
-    const config = await getConfig();
-    await closeOpenPosition(position.asset, config, creds);
+    // Shared with every other close-touching path — this position could
+    // also be past its flatten time or breaching the session-loss limit at
+    // the exact same minute-boundary tick, so without this lock those
+    // scheduled jobs could race on the same close.
+    const acquired = await acquireActionLock();
+    if (!acquired) return;
+    try {
+      const config = await getConfig();
+      await closeOpenPosition(position.asset, config, creds);
+    } finally {
+      await releaseActionLock();
+    }
   }
 );

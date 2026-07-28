@@ -6,6 +6,7 @@ import {
 } from "./secrets";
 import { configDocRef, getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import { PRODUCT_IDS, getBalanceSummary, getProduct } from "./coinbase/client";
 
 interface SetKillSwitchInput {
@@ -76,14 +77,26 @@ export const setKillSwitch = onCall<SetKillSwitchInput>(
     }
 
     if (on) {
-      const config = await getConfig();
-      const creds = {
-        apiKeyName: coinbaseApiKeyName.value(),
-        privateKeyPem: coinbaseApiPrivateKey.value(),
-      };
-      const assetsToClose = scope === "global" ? ASSETS : [scope];
-      for (const asset of assetsToClose) {
-        await closeOpenPosition(asset, config, creds);
+      // Several scheduled jobs (flatten, session-loss monitor, bracket-fill
+      // sync) can independently try to close the same open position on the
+      // exact same "every minute" cadence — without this shared lock, a
+      // manual kill-switch trip landing in that same window could race one
+      // of them and double-write the close.
+      const acquired = await acquireActionLock();
+      if (acquired) {
+        try {
+          const config = await getConfig();
+          const creds = {
+            apiKeyName: coinbaseApiKeyName.value(),
+            privateKeyPem: coinbaseApiPrivateKey.value(),
+          };
+          const assetsToClose = scope === "global" ? ASSETS : [scope];
+          for (const asset of assetsToClose) {
+            await closeOpenPosition(asset, config, creds);
+          }
+        } finally {
+          await releaseActionLock();
+        }
       }
     }
 

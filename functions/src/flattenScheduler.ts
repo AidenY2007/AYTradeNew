@@ -4,6 +4,7 @@ import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { isPastFlattenTime } from "./tradingWindow";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import { PositionDoc } from "./types";
 
 // Independent backstop for the "never hold overnight" rule: runs every
@@ -28,12 +29,24 @@ export const flattenOverduePositions = onSchedule(
       privateKeyPem: coinbaseApiPrivateKey.value(),
     };
 
-    for (const doc of openSnap.docs) {
-      const position = doc.data() as PositionDoc;
-      const window = config.tradingWindow[position.asset];
-      if (isPastFlattenTime(window)) {
-        await closeOpenPosition(position.asset, config, creds);
+    // Shared with every other close-touching path (webhook flatten, kill
+    // switches, session-loss monitor, bracket-fill sync) — several of which
+    // run on this exact same every-minute schedule, so without this lock
+    // two of them could race on the same open position and double-write
+    // its close. If it's busy, skip this run; next minute's tick will
+    // catch it if still overdue.
+    const acquired = await acquireActionLock();
+    if (!acquired) return;
+    try {
+      for (const doc of openSnap.docs) {
+        const position = doc.data() as PositionDoc;
+        const window = config.tradingWindow[position.asset];
+        if (isPastFlattenTime(window)) {
+          await closeOpenPosition(position.asset, config, creds);
+        }
       }
+    } finally {
+      await releaseActionLock();
     }
   }
 );

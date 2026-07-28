@@ -21,6 +21,7 @@ import {
 } from "./coinbase/client";
 import { computeMaxContractsSize } from "./sizing";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import {
   WebhookPayload,
   MissedEntryReason,
@@ -82,34 +83,6 @@ async function getLastExitTime(asset: Asset): Promise<Date | null> {
   return exitTime ? exitTime.toDate() : null;
 }
 
-// Guards against two entry webhooks arriving within milliseconds of each
-// other (observed in practice — TradingView can fire "Order fills only"
-// twice for what's logically one entry) both reading "no open position"
-// before either has finished writing one, which would place two real
-// orders. A Firestore transaction on this singleton doc makes the
-// check-and-claim atomic; the lock auto-expires after 60s in case a
-// request crashes mid-entry without releasing it, so a real failure can
-// never permanently block future entries.
-const entryLockRef = db.collection("system").doc("entryLock");
-
-async function acquireEntryLock(): Promise<boolean> {
-  return db.runTransaction(async (t) => {
-    const snap = await t.get(entryLockRef);
-    const data = snap.exists ? snap.data() : null;
-    const lockedAt = data?.lockedAt as Timestamp | undefined;
-    const isStale = lockedAt ? Date.now() - lockedAt.toMillis() > 60000 : false;
-    if (data?.locked && !isStale) {
-      return false;
-    }
-    t.set(entryLockRef, { locked: true, lockedAt: Timestamp.now() });
-    return true;
-  });
-}
-
-async function releaseEntryLock() {
-  await entryLockRef.set({ locked: false }, { merge: true });
-}
-
 async function getTodaysDailyStats() {
   const key = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
@@ -120,7 +93,15 @@ async function getTodaysDailyStats() {
 }
 
 export const webhook = onRequest(
-  { secrets: [coinbaseApiKeyName, coinbaseApiPrivateKey, webhookSharedSecret] },
+  {
+    secrets: [coinbaseApiKeyName, coinbaseApiPrivateKey, webhookSharedSecret],
+    // TradingView times a webhook delivery out well before a cold-started
+    // Cloud Run instance can spin up (container init + secret injection +
+    // module load), which is most likely to bite after a long idle gap —
+    // e.g. the trading window being closed for hours. Keeping one instance
+    // always warm removes that cold-start latency entirely.
+    minInstances: 1,
+  },
   async (req, res) => {
     if (req.method !== "POST") {
       res.status(405).send("Method not allowed");
@@ -149,6 +130,16 @@ export const webhook = onRequest(
     if (!secretsMatch(payload.secret, webhookSharedSecret.value())) {
       logger.warn("Webhook received with invalid secret");
       res.status(401).send("Unauthorized");
+      return;
+    }
+
+    // Pine's own strategy.exit() TP/SL orders fire this on every bar-close
+    // fill purely so TradingView's backtest visualization stays accurate —
+    // Coinbase's real bracket order (or the dry-run watcher) is the actual
+    // enforcement, so this is a pure no-op, checked before any Firestore or
+    // Coinbase call to keep it as cheap and fast as possible.
+    if (payload.action === "ignore") {
+      res.status(200).send("ignored");
       return;
     }
 
@@ -209,7 +200,7 @@ async function handleEntry(
     return "blocked:kill_switch_active";
   }
 
-  const acquired = await acquireEntryLock();
+  const acquired = await acquireActionLock();
   if (!acquired) {
     await logMissedEntry(asset, "position_already_open", payload);
     return "blocked:position_already_open";
@@ -217,7 +208,7 @@ async function handleEntry(
   try {
     return await handleEntryLocked(asset, payload, config, creds);
   } finally {
-    await releaseEntryLock();
+    await releaseActionLock();
   }
 }
 
@@ -371,7 +362,7 @@ async function handleFlatten(
   // the same double-fire race observed on entries (TradingView firing an
   // alert twice within the same second) from placing two real closing
   // orders back-to-back.
-  const acquired = await acquireEntryLock();
+  const acquired = await acquireActionLock();
   if (!acquired) {
     return "blocked:action_in_progress";
   }
@@ -379,6 +370,6 @@ async function handleFlatten(
     const closed = await closeOpenPosition(asset, config, creds);
     return closed ? `flattened:${config.liveMode ? "live" : "dry_run"}` : "no_open_position";
   } finally {
-    await releaseEntryLock();
+    await releaseActionLock();
   }
 }

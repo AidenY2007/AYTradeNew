@@ -1,5 +1,5 @@
 //@version=6
-strategy("AY VWAP Trend BTC vFinal", overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0, calc_on_every_tick=false, process_orders_on_close=true, margin_long=0, margin_short=0)
+strategy("AY VWAP Trend BTC vFinal", overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=100, margin_long=0, margin_short=0)
 
 // ── ADJUSTABLE SETTINGS ──
 tpDollars      = input.float(2000.0, "Take Profit ($ price move)", minval=0.5, step=10)
@@ -78,25 +78,36 @@ if justClosed
 inCooldown = not na(lastExitTime) and (time - lastExitTime) < cooldownHours * 3600000
 
 // ── SIGNAL LOGIC (state-based: any qualifying close enters) ──
-// timeOK/inCooldown intentionally left out of the gate below — entry
-// timing, weekend blocking, and cooldown are now enforced server-side
-// (Firebase) so they're editable from the dashboard without republishing
-// this script. timeOK/inCooldown are still computed above for the debug
-// labels only.
-longEntry  = trendUp and shockOK and volOK and not posOpen
-shortEntry = trendDown and shockOK and volOK and not posOpen
+// timeOK/inCooldown/posOpen intentionally left out of the gate below —
+// entry timing, weekend blocking, cooldown, and the single-open-position
+// rule are all enforced server-side (Firebase) now, so they're editable
+// (or, for the position rule, always correct against real account state)
+// without republishing this script. Pine may re-propose an entry the
+// server ends up rejecting (e.g. a position is already open for real, or
+// the server independently blocked the prior one) — that's expected and
+// harmless; the server is the sole authority on whether an entry actually
+// happens. timeOK/inCooldown/posOpen are still computed above for the
+// debug labels only.
+longEntry  = trendUp and shockOK and volOK
+shortEntry = trendDown and shockOK and volOK
 
 // ── DAILY FLATTEN at 3:30pm ET ──
 pastFlatten = minsET >= flatHourET * 60 + flatMinuteET
 
 // ── WEBHOOK PAYLOADS (Firebase) ──
-flattenSide = strategy.position_size > 0 ? "long" : "short"
 longAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC","action":"entry","side":"long","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
 shortAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC","action":"entry","side":"short","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
-flattenAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC","action":"flatten","side":"' + flattenSide + '"}'
+ignoreAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC","action":"ignore"}'
 
+// close_all's alert_message is tagged "ignore" (not "flatten") — the
+// real daily flatten is enforced entirely server-side by the scheduled
+// flattenOverduePositions function, which checks real elapsed time every
+// minute against this asset's configured flatten time and is actually
+// more precise than this 30-minute-bar-based check could ever be. This
+// close_all stays purely so TradingView's own backtest visualization
+// still flattens daily like the real system does.
 if posOpen and pastFlatten
-    strategy.close_all(comment="Daily Flatten 3:30pm ET", alert_message=flattenAlertMsg)
+    strategy.close_all(comment="Daily Flatten 3:30pm ET", alert_message=ignoreAlertMsg)
 
 // ── DEBUG LABELS ──
 slopeTxt = "slope $" + str.tostring(slopeSigned, "#") + "/hr"
@@ -182,14 +193,20 @@ if shortEntry
     strategy.entry("Short", strategy.short, alert_message=shortAlertMsg)
 
 // ── TP/SL ──
+// alert_message here is purely so TradingView's own backtest visualization
+// stays accurate for these fills — the real enforcement is Coinbase's
+// exchange-side bracket order placed server-side at entry (live) or the
+// simulated watcher (dry-run), never Pine. The server no-ops "ignore".
 strategy.exit(
      "Long Exit",
      from_entry="Long",
      profit=tpDollars / syminfo.mintick,
-     loss=slDollars / syminfo.mintick)
+     loss=slDollars / syminfo.mintick,
+     alert_message=ignoreAlertMsg)
 
 strategy.exit(
      "Short Exit",
      from_entry="Short",
      profit=tpDollars / syminfo.mintick,
-     loss=slDollars / syminfo.mintick)
+     loss=slDollars / syminfo.mintick,
+     alert_message=ignoreAlertMsg)

@@ -1,7 +1,12 @@
 import { Asset } from "./admin";
 
 export type Side = "long" | "short";
-export type WebhookAction = "entry" | "flatten";
+// "ignore" is sent by the real Pine scripts' internal TP/SL exit orders —
+// those exist only so TradingView's own backtest visualization looks
+// right; the actual TP/SL enforcement is Coinbase's exchange-side bracket
+// order (live) or the simulated watcher (dry-run), never Pine. The server
+// no-ops this action immediately rather than treating it as a real flatten.
+export type WebhookAction = "entry" | "flatten" | "ignore";
 
 export interface WebhookPayload {
   secret: string;

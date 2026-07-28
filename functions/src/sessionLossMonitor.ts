@@ -3,6 +3,7 @@ import { db, ASSETS, Asset } from "./admin";
 import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
+import { acquireActionLock, releaseActionLock } from "./lock";
 import { PRODUCT_IDS, getProduct } from "./coinbase/client";
 import { PositionDoc } from "./types";
 
@@ -74,8 +75,21 @@ export const monitorSessionLoss = onSchedule(
     await statsRef.set({ killSwitchTriggered: true }, { merge: true });
 
     if (openAsset) {
-      const freshConfig = await getConfig();
-      await closeOpenPosition(openAsset, freshConfig, creds);
+      // Shared with every other close-touching path — this runs on the same
+      // every-minute schedule as flattenOverduePositions/syncLiveBracketFills,
+      // so without this lock two of them could race on the same position.
+      // The kill switch above is already tripped regardless of whether the
+      // lock is free right now, so a busy lock only delays the force-close
+      // by up to a minute, never the block on new entries.
+      const acquired = await acquireActionLock();
+      if (acquired) {
+        try {
+          const freshConfig = await getConfig();
+          await closeOpenPosition(openAsset, freshConfig, creds);
+        } finally {
+          await releaseActionLock();
+        }
+      }
     }
   }
 );
