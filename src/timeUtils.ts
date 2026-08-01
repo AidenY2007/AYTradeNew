@@ -73,3 +73,39 @@ export function minsUntilFlatten(window: AssetTradingWindow): string {
   if (remaining <= 0) return "past flatten time";
   return formatSecs(remaining);
 }
+
+// Same HH:MM:SS format but with a leading day count — needed for countdowns
+// that can be multiple days out (unlike the same-day windows above).
+export function formatDaysHMS(totalSeconds: number): string {
+  const days = Math.floor(totalSeconds / 86400);
+  const rest = totalSeconds % 86400;
+  return days > 0 ? `${days}d ${formatSecs(rest)}` : formatSecs(rest);
+}
+
+const WEEKDAY_ORDER = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const FRIDAY_INDEX = 5;
+const MAINTENANCE_START_SECS = (16 * 60 + 45) * 60; // 4:45pm ET — Coinbase's official CFM maintenance window, mirrors isFridayMaintenanceWindow server-side
+const MAINTENANCE_END_MINS = 18 * 60 + 15; // 6:15pm ET, minute-granularity — mirrors server exactly
+
+// Mirrors tradingWindow.ts's isFridayMaintenanceWindow() server-side, at the
+// same minute granularity, so the dashboard never shows a status the server
+// would actually disagree with.
+export function isInFridayMaintenanceWindow(): boolean {
+  const { secondsET, weekday } = nowSecondsET();
+  if (weekday !== "Fri") return false;
+  const minsET = Math.floor(secondsET / 60);
+  return minsET >= MAINTENANCE_START_SECS / 60 && minsET <= MAINTENANCE_END_MINS;
+}
+
+// btc4h never flattens on a timer, so "Flattens in ..." doesn't apply to it —
+// this counts down to the next moment entries close for the Friday
+// maintenance blackout instead, the only recurring time-based event it has.
+export function secondsUntilNextFridayMaintenanceStart(): number {
+  const { secondsET, weekday } = nowSecondsET();
+  const todayIndex = WEEKDAY_ORDER.indexOf(weekday);
+  let daysUntilFriday = (FRIDAY_INDEX - todayIndex + 7) % 7;
+  if (daysUntilFriday === 0 && secondsET >= MAINTENANCE_START_SECS) {
+    daysUntilFriday = 7; // today's window already started/passed — target next week's
+  }
+  return daysUntilFriday * 86400 + (MAINTENANCE_START_SECS - secondsET);
+}

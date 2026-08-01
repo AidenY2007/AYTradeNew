@@ -11,7 +11,38 @@ export const PRODUCT_IDS: Record<Asset, string> = {
   tech: "TEK-19DEC30-CDE",
   ai: "AIP-19DEC30-CDE",
   china: "CHN-19DEC30-CDE",
+  // Same underlying Coinbase product as "btc" — btc4h is a second strategy
+  // trading the same BTC nano perp on a different timeframe, not a distinct
+  // instrument.
+  btc4h: "BIP-20DEC30-CDE",
 };
+
+// Fixed contract multiplier per product — BTC's nano contract is 0.01 BTC,
+// the equity-index perps (Tech/AI/China) are 1:1. Confirmed facts about these
+// listings, not something derivable from account state. Hardcoded rather
+// than trusted from Coinbase's API response, since a missing/wrong field
+// there would otherwise silently corrupt PnL with no visible error.
+export const CONTRACT_SIZE: Record<Asset, number> = {
+  btc: 0.01,
+  tech: 1,
+  ai: 1,
+  china: 1,
+  btc4h: 0.01,
+};
+
+// btc4h holds positions overnight/through weekends, so sizing must use
+// Coinbase's real overnight margin rate, not the higher intraday rate this
+// account otherwise qualifies for — a position sized at the intraday rate
+// would end up under-margined the instant overnight rules apply. Used by
+// maxOvernightLeverageForSide() below; only as a last resort if that rate is
+// ever missing from Coinbase's response (confirmed against Coinbase's own
+// order form as of when this was added).
+export const FALLBACK_OVERNIGHT_LEVERAGE = 4.1;
+
+// Extra safety margin on top of Coinbase's own reported overnight rate —
+// guards against the rate shifting slightly between when a position is
+// sized and when overnight margin rules actually take effect.
+const OVERNIGHT_LEVERAGE_HAIRCUT = 0.9;
 
 export interface CoinbaseCredentials {
   apiKeyName: string;
@@ -127,6 +158,13 @@ async function request<T>(
 export interface BalanceSummary {
   futuresBuyingPower: number;
   totalUsdBalance: number;
+  // Dollar buffer above the liquidation threshold, computed under overnight
+  // margin rules specifically (Coinbase's own `overnight_margin_window_measure
+  // .liquidation_buffer`) — checked even during intraday hours, since it
+  // reflects the stricter requirement a held-overnight position will face
+  // regardless of what time it was entered. null if the field is missing
+  // from the response, never a guessed number.
+  overnightLiquidationBufferUsd: number | null;
   raw: unknown;
 }
 
@@ -139,6 +177,10 @@ export async function getBalanceSummary(
     "/api/v3/brokerage/cfm/balance_summary"
   );
   const summary = json.balance_summary ?? {};
+  const overnightBuffer =
+    summary.overnight_margin_window_measure?.liquidation_buffer?.value ??
+    summary.overnight_margin_window_measure?.liquidation_buffer;
+  const overnightBufferNum = Number(overnightBuffer);
   return {
     futuresBuyingPower: Number(
       summary.futures_buying_power?.value ?? summary.cfm_usd_balance?.value ?? 0
@@ -146,6 +188,9 @@ export async function getBalanceSummary(
     totalUsdBalance: Number(
       summary.total_usd_balance?.value ?? summary.cfm_usd_balance?.value ?? 0
     ),
+    overnightLiquidationBufferUsd: Number.isFinite(overnightBufferNum)
+      ? overnightBufferNum
+      : null,
     raw: json,
   };
 }
@@ -182,13 +227,18 @@ export interface ProductInfo {
   price: number;
   baseIncrement: number;
   quoteIncrement: number;
-  // Notional value of one contract in the underlying's own units, e.g. 0.01
-  // for BTC's nano contract, 1 for the equity-index perps.
+  // Notional value of one contract in the underlying's own units. Always
+  // 0.01 for our 4 products — see CONTRACT_SIZE.
   contractSize: number;
   // Fraction of notional required as margin, intraday — leverage = 1/rate.
   // Long/short rates differ slightly, so both are kept and picked by side.
   intradayLongMarginRate: number;
   intradayShortMarginRate: number;
+  // Same shape as above but for the stricter overnight/weekend requirement —
+  // null if Coinbase's response doesn't include it (see
+  // maxOvernightLeverageForSide()'s fallback).
+  overnightLongMarginRate: number | null;
+  overnightShortMarginRate: number | null;
   // Equity-index perps (Tech/AI/China) trade real market hours, not 24/7 —
   // must be checked before every order, separately from our own time rules.
   isSessionOpen: boolean;
@@ -197,8 +247,9 @@ export interface ProductInfo {
 
 export async function getProduct(
   creds: CoinbaseCredentials,
-  productId: string
+  asset: Asset
 ): Promise<ProductInfo> {
+  const productId = PRODUCT_IDS[asset];
   const json = await request<any>(
     creds,
     "GET",
@@ -210,13 +261,21 @@ export async function getProduct(
     price: Number(json.price),
     baseIncrement: Number(json.base_increment),
     quoteIncrement: Number(json.quote_increment),
-    contractSize: Number(futureDetails.contract_size ?? 1),
+    contractSize: CONTRACT_SIZE[asset],
     intradayLongMarginRate: Number(
       futureDetails.intraday_margin_rate?.long_margin_rate ?? 1
     ),
     intradayShortMarginRate: Number(
       futureDetails.intraday_margin_rate?.short_margin_rate ?? 1
     ),
+    overnightLongMarginRate:
+      futureDetails.overnight_margin_rate?.long_margin_rate != null
+        ? Number(futureDetails.overnight_margin_rate.long_margin_rate)
+        : null,
+    overnightShortMarginRate:
+      futureDetails.overnight_margin_rate?.short_margin_rate != null
+        ? Number(futureDetails.overnight_margin_rate.short_margin_rate)
+        : null,
     isSessionOpen: Boolean(json.fcm_trading_session_details?.is_session_open),
     raw: json,
   };
@@ -231,6 +290,25 @@ export function maxLeverageForSide(
       ? product.intradayLongMarginRate
       : product.intradayShortMarginRate;
   return marginRate > 0 ? 1 / marginRate : 1;
+}
+
+// btc4h-only: sizes off Coinbase's real overnight margin rate (fetched
+// live), with a haircut on top as a buffer against the rate shifting
+// slightly between sizing and when overnight rules actually apply. Falls
+// back to the hardcoded FALLBACK_OVERNIGHT_LEVERAGE only if Coinbase's
+// response is ever missing this field.
+export function maxOvernightLeverageForSide(
+  product: ProductInfo,
+  side: "long" | "short"
+): number {
+  const marginRate =
+    side === "long"
+      ? product.overnightLongMarginRate
+      : product.overnightShortMarginRate;
+  if (marginRate == null || marginRate <= 0) {
+    return FALLBACK_OVERNIGHT_LEVERAGE;
+  }
+  return (1 / marginRate) * OVERNIGHT_LEVERAGE_HAIRCUT;
 }
 
 export interface OrderResult {
@@ -350,13 +428,23 @@ export async function waitForFill(
   return lastFill;
 }
 
+// Returns whether Coinbase actually confirmed the cancel — false both for a
+// real API failure and for "order no longer cancelable" (already filled or
+// already canceled). Callers that go on to place a replacement order must
+// check this rather than assume success, or a failed cancel could leave two
+// live orders resting at once.
 export async function cancelOrder(
   creds: CoinbaseCredentials,
   orderId: string
-): Promise<void> {
-  await request(creds, "POST", "/api/v3/brokerage/orders/batch_cancel", {
-    order_ids: [orderId],
-  });
+): Promise<boolean> {
+  const json = await request<any>(
+    creds,
+    "POST",
+    "/api/v3/brokerage/orders/batch_cancel",
+    { order_ids: [orderId] }
+  );
+  const result = (json.results ?? []).find((r: any) => r?.order_id === orderId);
+  return Boolean(result?.success);
 }
 
 export async function getOpenPositions(

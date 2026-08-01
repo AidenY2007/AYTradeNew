@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useDoc, useCollection } from "../hooks";
 import {
   setSessionLossLimit,
+  setTradableBalance,
   setLiveMode,
   setTradingWindow,
   setFeePerContract,
@@ -14,7 +15,7 @@ import {
 import type { Asset, AssetTradingWindow, PositionDoc, SystemConfig } from "../types";
 import { ASSET_LABELS } from "../types";
 
-const ASSETS: Asset[] = ["btc", "tech", "ai", "china"];
+const ASSETS: Asset[] = ["btc", "tech", "ai", "china", "btc4h"];
 
 function minsToHHMM(mins: number): string {
   const h = Math.floor(mins / 60).toString().padStart(2, "0");
@@ -147,6 +148,8 @@ export function SettingsPage() {
   const { data: config } = useDoc<SystemConfig>("system/config");
   const [lossLimit, setLossLimit] = useState<number | null>(null);
   const [savingPct, setSavingPct] = useState(false);
+  const [tradableBalance, setTradableBalanceDraft] = useState<number | null>(null);
+  const [savingTradableBalance, setSavingTradableBalance] = useState(false);
   const [verifyResult, setVerifyResult] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [productsResult, setProductsResult] = useState<string | null>(null);
@@ -161,6 +164,12 @@ export function SettingsPage() {
     if (config && lossLimit === null) setLossLimit(config.sessionLossLimitDollars);
   }, [config, lossLimit]);
 
+  useEffect(() => {
+    if (config && tradableBalance === null) {
+      setTradableBalanceDraft(config.tradableBalanceDollars);
+    }
+  }, [config, tradableBalance]);
+
   async function saveLossLimit() {
     if (lossLimit == null) return;
     setSavingPct(true);
@@ -168,6 +177,16 @@ export function SettingsPage() {
       await setSessionLossLimit(lossLimit);
     } finally {
       setSavingPct(false);
+    }
+  }
+
+  async function saveTradableBalance() {
+    if (tradableBalance == null) return;
+    setSavingTradableBalance(true);
+    try {
+      await setTradableBalance(tradableBalance);
+    } finally {
+      setSavingTradableBalance(false);
     }
   }
 
@@ -185,7 +204,7 @@ export function SettingsPage() {
   }
 
   async function resetWindows() {
-    if (!confirm("Reset all 4 trading windows back to the Pine script defaults?")) {
+    if (!confirm("Reset all 5 trading windows back to the Pine script defaults?")) {
       return;
     }
     setResetting(true);
@@ -238,7 +257,7 @@ export function SettingsPage() {
     <div>
       <h2 className="page-title">Settings</h2>
 
-      <div className="grid grid-2" style={{ marginBottom: 16 }}>
+      <div className="grid grid-3" style={{ marginBottom: 16 }}>
         <div className="card">
           <div className="card-label">Session Loss Kill Switch</div>
           <div className="settings-field">
@@ -252,6 +271,30 @@ export function SettingsPage() {
           </div>
           <button className="settings-save" onClick={saveLossLimit} disabled={savingPct}>
             {savingPct ? "Saving…" : "Save"}
+          </button>
+        </div>
+
+        <div className="card">
+          <div className="card-label">Tradable Balance Cap</div>
+          <div className="settings-field">
+            <label>
+              Max $ of account any single entry sizes against — every
+              strategy uses whichever is lower, this or Coinbase&apos;s actual
+              reported futures buying power.
+            </label>
+            <input
+              type="number"
+              step="100"
+              value={tradableBalance ?? ""}
+              onChange={(e) => setTradableBalanceDraft(Number(e.target.value))}
+            />
+          </div>
+          <button
+            className="settings-save"
+            onClick={saveTradableBalance}
+            disabled={savingTradableBalance}
+          >
+            {savingTradableBalance ? "Saving…" : "Save"}
           </button>
         </div>
 
@@ -300,7 +343,7 @@ export function SettingsPage() {
       <div className="card" style={{ marginTop: 24 }}>
         <div className="card-label">Coinbase Access Check</div>
         <p style={{ fontSize: 13, color: "var(--text-dim)", margin: "0 0 12px" }}>
-          Confirms the Coinbase API key can read futures balance and all 4
+          Confirms the Coinbase API key can read futures balance and all 5
           product definitions before going live.
         </p>
         <button className="settings-save" onClick={runVerify} disabled={verifying}>

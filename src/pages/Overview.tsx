@@ -8,10 +8,17 @@ import type {
   SystemConfig,
 } from "../types";
 import { ASSET_LABELS } from "../types";
-import { minsUntilFlatten, windowStatus, dateStringET } from "../timeUtils";
+import {
+  minsUntilFlatten,
+  windowStatus,
+  dateStringET,
+  formatDaysHMS,
+  secondsUntilNextFridayMaintenanceStart,
+  isInFridayMaintenanceWindow,
+} from "../timeUtils";
 import { pnlColor, pnlSign, sideColor } from "../format";
 
-const ASSETS: Asset[] = ["btc", "tech", "ai", "china"];
+const ASSETS: Asset[] = ["btc", "tech", "ai", "china", "btc4h"];
 
 function Toggle({
   on,
@@ -133,6 +140,20 @@ export function OverviewPage() {
     if (config.globalKillSwitch || config.assetKillSwitches[asset]) {
       return { isOpen: false, label: "kill switch active" };
     }
+    // btc4h has no real daily entry window (see tradingWindow.ts) — the only
+    // recurring restriction it has is the Friday maintenance block, so its
+    // pill counts down to that instead of reusing the generic same-day
+    // entry-window countdown, which would misleadingly imply a real daily
+    // close/reopen that doesn't exist for this asset.
+    if (asset === "btc4h") {
+      if (isInFridayMaintenanceWindow()) {
+        return { isOpen: false, label: "blocked — Friday maintenance window" };
+      }
+      return {
+        isOpen: true,
+        label: `active — next maintenance in ${formatDaysHMS(secondsUntilNextFridayMaintenanceStart())}`,
+      };
+    }
     const windowResult = windowStatus(config.tradingWindow[asset]);
     if (!windowResult.isOpen) {
       return windowResult;
@@ -209,10 +230,14 @@ export function OverviewPage() {
         <div className="card-label session-timer-label">Session Timer</div>
         {openPosition ? (
           <div className="session-timer-value">
-            Flattens in {minsUntilFlatten(config?.tradingWindow[openPosition.asset] ?? DEFAULT_WINDOW)}
+            {openPosition.asset === "btc4h" ? (
+              <>Next maintenance block in {formatDaysHMS(secondsUntilNextFridayMaintenanceStart())}</>
+            ) : (
+              <>Flattens in {minsUntilFlatten(config?.tradingWindow[openPosition.asset] ?? DEFAULT_WINDOW)}</>
+            )}
           </div>
         ) : (
-          <div className="grid grid-4" style={{ marginTop: 16 }}>
+          <div className="grid grid-5" style={{ marginTop: 16 }}>
             {ASSETS.map((asset) => {
               const status = pillFor(asset);
               return (

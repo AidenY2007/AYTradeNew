@@ -1,4 +1,4 @@
-export type Asset = "btc" | "tech" | "ai" | "china";
+export type Asset = "btc" | "tech" | "ai" | "china" | "btc4h";
 export type Side = "long" | "short";
 export type PositionStatus = "open" | "closed";
 export type TradingMode = "live" | "dry_run";
@@ -8,6 +8,7 @@ export const ASSET_LABELS: Record<Asset, string> = {
   tech: "Tech100",
   ai: "AI10",
   china: "China10",
+  btc4h: "BTC 4H",
 };
 
 export interface AssetTradingWindow {
@@ -25,6 +26,7 @@ export interface SystemConfig {
   liveMode: boolean;
   tradingWindow: Record<Asset, AssetTradingWindow>;
   feesPerContract: Record<Asset, number>;
+  tradableBalanceDollars: number;
 }
 
 export interface Timestamped {

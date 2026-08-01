@@ -2,7 +2,6 @@ import { onCall, HttpsError } from "firebase-functions/https";
 import { OWNER_UID, ASSETS } from "./admin";
 import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import {
-  PRODUCT_IDS,
   getBalanceSummary,
   getProduct,
   listProducts,
@@ -43,10 +42,7 @@ export const verifyCoinbaseAccess = onCall(
 
     for (const asset of ASSETS) {
       try {
-        results[`product_${asset}`] = await getProduct(
-          creds,
-          PRODUCT_IDS[asset]
-        );
+        results[`product_${asset}`] = await getProduct(creds, asset);
       } catch (err) {
         results[`product_${asset}_error`] =
           err instanceof Error ? err.message : String(err);

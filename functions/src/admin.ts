@@ -9,5 +9,5 @@ export const db = getFirestore();
 
 export const OWNER_UID = "owner";
 
-export const ASSETS = ["btc", "tech", "ai", "china"] as const;
+export const ASSETS = ["btc", "tech", "ai", "china", "btc4h"] as const;
 export type Asset = (typeof ASSETS)[number];

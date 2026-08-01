@@ -28,6 +28,28 @@ export const setSessionLossLimit = onCall<SetSessionLossLimitInput>(
   }
 );
 
+interface SetTradableBalanceInput {
+  amount: number;
+}
+
+// Every asset's entry sizes off whichever is lower: this cap or Coinbase's
+// actual reported futures buying power (see webhook.ts) — so growth in real
+// account balance never silently increases position size beyond this.
+export const setTradableBalance = onCall<SetTradableBalanceInput>(
+  async (request) => {
+    requireOwner(request.auth);
+    const { amount } = request.data;
+    if (typeof amount !== "number" || amount <= 0) {
+      throw new HttpsError("invalid-argument", "amount must be > 0.");
+    }
+    await configDocRef().set(
+      { tradableBalanceDollars: amount },
+      { merge: true }
+    );
+    return { ok: true };
+  }
+);
+
 interface SetLiveModeInput {
   liveMode: boolean;
 }

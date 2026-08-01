@@ -4,7 +4,7 @@ import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
-import { PRODUCT_IDS, getProduct } from "./coinbase/client";
+import { getProduct } from "./coinbase/client";
 import { PositionDoc } from "./types";
 
 function todayKey(): string {
@@ -49,7 +49,7 @@ export const monitorSessionLoss = onSchedule(
       const position = openSnap.docs[0].data() as PositionDoc;
       openAsset = position.asset;
       try {
-        const product = await getProduct(creds, PRODUCT_IDS[position.asset]);
+        const product = await getProduct(creds, position.asset);
         const priceDiff =
           position.side === "long"
             ? product.price - position.entryPrice

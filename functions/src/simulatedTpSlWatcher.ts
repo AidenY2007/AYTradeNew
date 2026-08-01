@@ -4,7 +4,8 @@ import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
-import { PRODUCT_IDS, getProduct } from "./coinbase/client";
+import { getProduct } from "./coinbase/client";
+import { effectiveTpDollars } from "./staleTp";
 import { PositionDoc } from "./types";
 
 // Dry-run positions never get a real Coinbase bracket order, so nothing
@@ -38,17 +39,18 @@ export const watchSimulatedTpSl = onSchedule(
 
     let price: number;
     try {
-      const product = await getProduct(creds, PRODUCT_IDS[position.asset]);
+      const product = await getProduct(creds, position.asset);
       price = product.price;
     } catch {
       return;
     }
 
+    const tpDollars = effectiveTpDollars(position);
     const hitTp =
-      position.tpDollars != null &&
+      tpDollars != null &&
       (position.side === "long"
-        ? price >= position.entryPrice + position.tpDollars
-        : price <= position.entryPrice - position.tpDollars);
+        ? price >= position.entryPrice + tpDollars
+        : price <= position.entryPrice - tpDollars);
     const hitSl =
       position.slDollars != null &&
       (position.side === "long"

@@ -7,7 +7,7 @@ import {
 import { configDocRef, getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
-import { PRODUCT_IDS, getBalanceSummary, getProduct } from "./coinbase/client";
+import { getBalanceSummary, getProduct } from "./coinbase/client";
 
 interface SetKillSwitchInput {
   scope: "global" | Asset;
@@ -138,7 +138,7 @@ export const getSystemState = onCall(
     await Promise.all(
       ASSETS.map(async (asset) => {
         try {
-          const product = await getProduct(creds, PRODUCT_IDS[asset]);
+          const product = await getProduct(creds, asset);
           sessionOpen[asset] = product.isSessionOpen;
           prices[asset] = product.price;
         } catch {

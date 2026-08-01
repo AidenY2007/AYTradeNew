@@ -9,12 +9,13 @@ import {
   webhookSharedSecret,
 } from "./secrets";
 import { getConfig } from "./config";
-import { checkEntryAllowed } from "./tradingWindow";
+import { checkEntryAllowed, isFridayMaintenanceWindow } from "./tradingWindow";
 import {
   PRODUCT_IDS,
   getBalanceSummary,
   getProduct,
   maxLeverageForSide,
+  maxOvernightLeverageForSide,
   placeMarketOrder,
   placeBracketOrder,
   waitForFill,
@@ -241,6 +242,16 @@ async function handleEntryLocked(
     return `blocked:timing_restricted:${windowCheck.reason}`;
   }
 
+  // btc4h is otherwise always allowed to enter (it holds through nights and
+  // weekends), except during Coinbase's Friday maintenance window.
+  if (asset === "btc4h" && isFridayMaintenanceWindow()) {
+    await logMissedEntry(asset, "timing_restricted", {
+      ...payload,
+      windowReason: "coinbase_maintenance",
+    });
+    return "blocked:timing_restricted:coinbase_maintenance";
+  }
+
   if (!payload.side || (payload.side !== "long" && payload.side !== "short")) {
     await logMissedEntry(asset, "invalid_payload", payload);
     return "blocked:invalid_payload";
@@ -251,19 +262,30 @@ async function handleEntryLocked(
 
   const [balanceSummary, product] = await Promise.all([
     getBalanceSummary(creds),
-    getProduct(creds, productId),
+    getProduct(creds, asset),
   ]);
 
   // Tech/AI/China follow real equity-index market hours, unlike BTC's
   // 24/7 session — this is separate from (and in addition to) our own
-  // Pine-mirrored timing rules.
-  if (!product.isSessionOpen) {
+  // Pine-mirrored timing rules. btc4h skips this: it already has its own
+  // hardcoded maintenance-window check above rather than trusting Coinbase's
+  // live session-status field for that purpose.
+  if (asset !== "btc4h" && !product.isSessionOpen) {
     await logMissedEntry(asset, "market_session_closed", payload);
     return "blocked:market_session_closed";
   }
 
-  const balance = balanceSummary.futuresBuyingPower;
-  const leverage = maxLeverageForSide(product, payload.side);
+  // Sizes off whichever is lower — Coinbase's real buying power, or the
+  // manual cap — so growth in real account balance never silently increases
+  // position size beyond what's been configured in Settings.
+  const balance = Math.min(
+    balanceSummary.futuresBuyingPower,
+    config.tradableBalanceDollars
+  );
+  const leverage =
+    asset === "btc4h"
+      ? maxOvernightLeverageForSide(product, payload.side)
+      : maxLeverageForSide(product, payload.side);
   const size = computeMaxContractsSize(
     balance,
     product.price,
@@ -331,6 +353,16 @@ async function handleEntryLocked(
     slDollars: payload.slDollars ?? null,
     bracketOrderId,
     entryOrderId,
+    staleAmended: false,
+    // The liquidation-safety check runs asynchronously now (see
+    // liquidationWatcher.ts) rather than blocking this response — Coinbase's
+    // balance-settlement time isn't bounded tightly enough to poll for
+    // inline without risking this request's own timeout. Stores the raw,
+    // uncapped buying power (not the tradableBalanceDollars-capped `balance`
+    // used for sizing) — the watcher needs the real pre-trade figure to
+    // measure how much it actually dropped.
+    preEntryBuyingPower: config.liveMode ? balanceSummary.futuresBuyingPower : null,
+    liquidationVerified: !config.liveMode,
   };
   const positionRef = await positionsCol.add(positionDoc);
 

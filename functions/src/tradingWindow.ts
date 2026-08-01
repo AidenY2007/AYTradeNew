@@ -63,6 +63,19 @@ export function isInCooldown(
   return elapsedMs < window.cooldownHours * 3600_000;
 }
 
+// Coinbase's official CFM futures maintenance window: every Friday,
+// 4:45pm-6:15pm ET. Hardcoded rather than checked via product.isSessionOpen
+// (Coinbase's live session-status API field) — that field is meant for the
+// equity-index perps' real market hours, not specifically this maintenance
+// window, so it's not a reliable signal to gate btc4h's entries on. Only
+// btc4h checks this — the other assets flatten daily well before a
+// Friday-evening window would ever matter.
+export function isFridayMaintenanceWindow(now: Date = new Date()): boolean {
+  const { minsET, weekday } = nowInET(now);
+  if (weekday !== "Fri") return false;
+  return minsET >= 16 * 60 + 45 && minsET <= 18 * 60 + 15;
+}
+
 export function checkEntryAllowed(
   window: AssetTradingWindow,
   lastExitTime: Date | null,

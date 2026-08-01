@@ -49,7 +49,7 @@ export const testLiveShortEntry = onCall(
       privateKeyPem: coinbaseApiPrivateKey.value(),
     };
     const productId = PRODUCT_IDS.btc;
-    const product = await getProduct(creds, productId);
+    const product = await getProduct(creds, "btc");
 
     const size = "1"; // exactly 1 contract = 0.01 BTC, fixed for this test
     const order = await placeMarketOrder(creds, productId, "SELL", size);
@@ -75,6 +75,13 @@ export const testLiveShortEntry = onCall(
       slDollars: null,
       bracketOrderId: null,
       entryOrderId: order.orderId,
+      staleAmended: false,
+      // This button already bypasses kill switches and trading-window
+      // checks by design (see the comment above) — no bracket/TP/SL either,
+      // so there's nothing for the liquidation watcher to meaningfully
+      // check; mark it pre-verified so it's skipped.
+      preEntryBuyingPower: null,
+      liquidationVerified: true,
     };
     const positionRef = await positionsCol.add(positionDoc);
 

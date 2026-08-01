@@ -37,6 +37,11 @@ export interface SystemConfig {
   // Round-trip commission per contract, in dollars — Coinbase futures charge
   // a flat per-contract fee rather than a percentage of notional.
   feesPerContract: Record<Asset, number>;
+  // Manual cap on how much of the account any single strategy's entry sizes
+  // against — every asset sizes off whichever is lower, this or Coinbase's
+  // actual reported futures buying power, so growth in real buying power
+  // never silently increases position size beyond what's been set here.
+  tradableBalanceDollars: number;
 }
 
 export type PositionStatus = "open" | "closed";
@@ -71,6 +76,24 @@ export interface PositionDoc {
   slDollars: number | null;
   bracketOrderId: string | null;
   entryOrderId: string | null;
+  // Whether the live Coinbase bracket order's TP has already been amended
+  // down to the stale-position level (see staleTp.ts) — only ever set true
+  // for live btc4h positions; meaningless (stays false) for everything else.
+  staleAmended: boolean;
+  // Buying power immediately before this entry — used by
+  // liquidationWatcher.ts to detect once Coinbase's balance summary has
+  // actually settled to reflect this position's margin usage (a fresh read
+  // can lag behind the fill). Only meaningful for live positions; null for
+  // dry-run.
+  preEntryBuyingPower: number | null;
+  // Whether the post-entry liquidation-safety check has resolved (verified
+  // safe, or already flattened for being unsafe) — checked asynchronously by
+  // liquidationWatcher.ts rather than blocking the webhook response, since
+  // Coinbase's balance settlement time isn't bounded tightly enough to wait
+  // on inline. Initialized true for anything the check doesn't apply to
+  // (dry-run), so the watcher's query only ever picks up live positions
+  // still genuinely awaiting a check.
+  liquidationVerified: boolean;
 }
 
 export type MissedEntryReason =

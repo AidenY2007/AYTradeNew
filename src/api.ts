@@ -14,6 +14,10 @@ export function setSessionLossLimit(amount: number) {
   return httpsCallable(functions, "setSessionLossLimit")({ amount });
 }
 
+export function setTradableBalance(amount: number) {
+  return httpsCallable(functions, "setTradableBalance")({ amount });
+}
+
 export function setTradingWindow(asset: string, window: AssetTradingWindow) {
   return httpsCallable(functions, "setTradingWindow")({ asset, window });
 }

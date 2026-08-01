@@ -146,7 +146,7 @@ export async function closeOpenPosition(
       exitPrice = fill.avgFilledPrice ?? position.entryPrice;
     }
   } else {
-    const product = await getProduct(creds, productId);
+    const product = await getProduct(creds, asset);
     exitPrice = product.price;
   }
 
