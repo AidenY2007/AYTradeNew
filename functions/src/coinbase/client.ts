@@ -41,8 +41,11 @@ export const FALLBACK_OVERNIGHT_LEVERAGE = 4.1;
 
 // Extra safety margin on top of Coinbase's own reported overnight rate —
 // guards against the rate shifting slightly between when a position is
-// sized and when overnight margin rules actually take effect.
-const OVERNIGHT_LEVERAGE_HAIRCUT = 0.9;
+// sized and when overnight margin rules actually take effect. Applied to
+// both the live-fetched rate and FALLBACK_OVERNIGHT_LEVERAGE below — the
+// fallback is a stand-in for the same real-rate figure, so it needs the same
+// safety margin, not the raw unhaircut number.
+const OVERNIGHT_LEVERAGE_HAIRCUT = 0.95;
 
 export interface CoinbaseCredentials {
   apiKeyName: string;
@@ -296,7 +299,11 @@ export function maxLeverageForSide(
 // live), with a haircut on top as a buffer against the rate shifting
 // slightly between sizing and when overnight rules actually apply. Falls
 // back to the hardcoded FALLBACK_OVERNIGHT_LEVERAGE only if Coinbase's
-// response is ever missing this field.
+// response is ever missing this field — the same haircut applies there too,
+// since the fallback stands in for the same rate and skipping the haircut on
+// it would size a position more aggressively than the normal path ever
+// would, right when Coinbase's own data is unavailable and caution matters
+// most.
 export function maxOvernightLeverageForSide(
   product: ProductInfo,
   side: "long" | "short"
@@ -306,7 +313,7 @@ export function maxOvernightLeverageForSide(
       ? product.overnightLongMarginRate
       : product.overnightShortMarginRate;
   if (marginRate == null || marginRate <= 0) {
-    return FALLBACK_OVERNIGHT_LEVERAGE;
+    return FALLBACK_OVERNIGHT_LEVERAGE * OVERNIGHT_LEVERAGE_HAIRCUT;
   }
   return (1 / marginRate) * OVERNIGHT_LEVERAGE_HAIRCUT;
 }

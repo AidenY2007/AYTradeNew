@@ -136,3 +136,71 @@ export interface ErrorDoc {
   message: string;
   detail?: unknown;
 }
+
+// One document per webhook invocation (entry attempt or flatten, whatever
+// the outcome), capturing every variable involved in that request end to
+// end — the raw signal, every config/kill-switch flag checked, the
+// balance/product snapshot used for sizing, the sizing math itself, any
+// order placed, and any error hit along the way. Distinct from `trades`
+// (the clean entry/exit ledger used for PnL) and `errors` (bare
+// context/message) — this is the full audit trail for debugging a single
+// request, written exactly once per webhook call regardless of whether it
+// succeeded, was blocked, or threw.
+export interface TradeLogDoc {
+  requestId: string;
+  time: FirebaseFirestore.Timestamp;
+  asset: Asset;
+  action: WebhookAction;
+  // The exact string returned to TradingView for this request (e.g.
+  // "entered:live:12", "blocked:timing_restricted:cooldown", "error").
+  outcome: string;
+  // Set once a position doc is actually created (entry) or closed
+  // (flatten) during this request; null for blocked/no-op requests.
+  positionId: string | null;
+  // Raw incoming payload with the shared secret stripped — never persist
+  // the webhook secret.
+  payload: unknown;
+  config: {
+    liveMode: boolean;
+    globalKillSwitch: boolean;
+    assetKillSwitch: boolean;
+    sessionLossLimitDollars: number;
+    tradableBalanceDollars: number;
+  } | null;
+  balance: {
+    futuresBuyingPower: number;
+    totalUsdBalance: number;
+    overnightLiquidationBufferUsd: number | null;
+  } | null;
+  product: {
+    price: number;
+    baseIncrement: number;
+    intradayLongMarginRate: number;
+    intradayShortMarginRate: number;
+    overnightLongMarginRate: number | null;
+    overnightShortMarginRate: number | null;
+    isSessionOpen: boolean;
+  } | null;
+  sizing: {
+    balanceUsed: number;
+    leverage: number;
+    size: number;
+  } | null;
+  order: {
+    entryOrderId: string | null;
+    entryPrice: number | null;
+    bracketOrderId: string | null;
+    tpPrice: number | null;
+    slPrice: number | null;
+    exitOrderId: string | null;
+    exitPrice: number | null;
+  } | null;
+  error: { message: string; stack: string | null } | null;
+}
+
+export interface ClosePositionResult {
+  closed: boolean;
+  positionId: string | null;
+  exitPrice: number | null;
+  exitOrderId: string | null;
+}

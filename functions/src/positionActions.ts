@@ -1,6 +1,6 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { db, Asset, ASSETS } from "./admin";
-import { SystemConfig, PositionDoc, TradeDoc } from "./types";
+import { SystemConfig, PositionDoc, TradeDoc, ClosePositionResult } from "./types";
 import {
   PRODUCT_IDS,
   getProduct,
@@ -93,13 +93,15 @@ export async function closeOpenPosition(
   asset: Asset,
   config: SystemConfig,
   creds: CoinbaseCredentials
-): Promise<boolean> {
+): Promise<ClosePositionResult> {
   const snap = await positionsCol
     .where("asset", "==", asset)
     .where("status", "==", "open")
     .limit(1)
     .get();
-  if (snap.empty) return false;
+  if (snap.empty) {
+    return { closed: false, positionId: null, exitPrice: null, exitOrderId: null };
+  }
 
   const positionRef = snap.docs[0].ref;
   const position = snap.docs[0].data() as PositionDoc;
@@ -133,17 +135,40 @@ export async function closeOpenPosition(
       exitOrderId = position.bracketOrderId;
     } else {
       if (position.bracketOrderId) {
-        await cancelOrder(creds, position.bracketOrderId).catch(() => undefined);
+        const cancelled = await cancelOrder(creds, position.bracketOrderId).catch(() => false);
+        if (!cancelled) {
+          // Coinbase's cancel isn't necessarily settled the instant this
+          // call returns — blindly placing a closing order for the full
+          // size right after an unconfirmed cancel races the exchange's own
+          // bookkeeping and gets rejected with
+          // PREVIEW_ORDER_SIZE_EXCEEDS_BRACKETED_POSITION (seen in
+          // production: a live btc4h position on 2026-08-04 sat unprotected
+          // for a full minute because of this). Re-check once — the bracket
+          // may have simply filled in the gap between the check above and
+          // this cancel attempt — before giving up.
+          const recheck = await getOrder(creds, position.bracketOrderId).catch(() => null);
+          if (recheck && recheck.status === "FILLED") {
+            exitPrice = recheck.avgFilledPrice ?? position.entryPrice;
+            exitOrderId = position.bracketOrderId;
+          } else {
+            throw new Error(
+              `Could not confirm cancellation of bracket order ${position.bracketOrderId} ` +
+                `for position ${positionRef.id} — refusing to place a duplicate closing order.`
+            );
+          }
+        }
       }
-      const exitOrder = await placeMarketOrder(
-        creds,
-        productId,
-        closingSide,
-        String(position.size)
-      );
-      exitOrderId = exitOrder.orderId;
-      const fill = await waitForFill(creds, exitOrder.orderId);
-      exitPrice = fill.avgFilledPrice ?? position.entryPrice;
+      if (!exitOrderId) {
+        const exitOrder = await placeMarketOrder(
+          creds,
+          productId,
+          closingSide,
+          String(position.size)
+        );
+        exitOrderId = exitOrder.orderId;
+        const fill = await waitForFill(creds, exitOrder.orderId);
+        exitPrice = fill.avgFilledPrice ?? position.entryPrice;
+      }
     }
   } else {
     const product = await getProduct(creds, asset);
@@ -166,5 +191,5 @@ export async function closeOpenPosition(
 
   await finalizePositionClose(positionRef, position, exitPrice, config);
 
-  return true;
+  return { closed: true, positionId: positionRef.id, exitPrice, exitOrderId };
 }

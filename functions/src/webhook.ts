@@ -28,12 +28,58 @@ import {
   MissedEntryReason,
   PositionDoc,
   TradeDoc,
+  TradeLogDoc,
+  WebhookAction,
 } from "./types";
 
 const positionsCol = db.collection("positions");
 const tradesCol = db.collection("trades");
 const missedEntriesCol = db.collection("missedEntries");
 const errorsCol = db.collection("errors");
+const tradeLogsCol = db.collection("tradeLogs");
+
+// Mutable accumulator threaded through the whole request: every handler
+// below fills in whichever section it touches (config, balance, product,
+// sizing, order) as it goes, so the single doc written at the very end
+// captures the complete picture regardless of where the request stopped —
+// blocked early, blocked late, succeeded, or threw.
+type TradeLogDraft = Omit<TradeLogDoc, "time" | "action"> & {
+  time: Timestamp;
+  action: WebhookAction | null;
+};
+
+// Called only once payload.action/asset are already validated as real
+// "entry"/"flatten" + a known Asset — see the invalid-payload check above
+// the call site.
+function newTradeLogDraft(asset: Asset, payload: Partial<WebhookPayload>): TradeLogDraft {
+  const rest = { ...payload };
+  delete rest.secret;
+  return {
+    requestId: crypto.randomUUID(),
+    time: Timestamp.now(),
+    asset,
+    action: (payload.action as WebhookAction) ?? null,
+    outcome: "unknown",
+    positionId: null,
+    payload: rest,
+    config: null,
+    balance: null,
+    product: null,
+    sizing: null,
+    order: null,
+    error: null,
+  };
+}
+
+async function writeTradeLog(draft: TradeLogDraft): Promise<void> {
+  try {
+    await tradeLogsCol.add(draft);
+  } catch (err) {
+    // Never let a logging failure mask the real outcome already sent to
+    // TradingView — this collection is purely diagnostic.
+    logger.error("Failed to write trade log", err);
+  }
+}
 
 function secretsMatch(provided: string, expected: string): boolean {
   const a = Buffer.from(provided);
@@ -171,17 +217,26 @@ export const webhook = onRequest(
       privateKeyPem: coinbaseApiPrivateKey.value(),
     };
 
+    const logDraft = newTradeLogDraft(asset, payload);
     try {
       const config = await getConfig();
 
       const outcome =
         payload.action === "entry"
-          ? await handleEntry(asset, payload, config, creds)
-          : await handleFlatten(asset, config, creds);
+          ? await handleEntry(asset, payload, config, creds, logDraft)
+          : await handleFlatten(asset, config, creds, logDraft);
+      logDraft.outcome = outcome;
       res.status(200).send(outcome);
     } catch (err) {
+      logDraft.outcome = "error";
+      logDraft.error = {
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack ?? null : null,
+      };
       await logError(`webhook:${payload.action}:${asset}`, err);
       res.status(500).send("error");
+    } finally {
+      await writeTradeLog(logDraft);
     }
   }
 );
@@ -190,8 +245,17 @@ async function handleEntry(
   asset: Asset,
   payload: Partial<WebhookPayload>,
   config: Awaited<ReturnType<typeof getConfig>>,
-  creds: { apiKeyName: string; privateKeyPem: string }
+  creds: { apiKeyName: string; privateKeyPem: string },
+  logDraft: TradeLogDraft
 ): Promise<string> {
+  logDraft.config = {
+    liveMode: config.liveMode,
+    globalKillSwitch: config.globalKillSwitch,
+    assetKillSwitch: config.assetKillSwitches[asset],
+    sessionLossLimitDollars: config.sessionLossLimitDollars,
+    tradableBalanceDollars: config.tradableBalanceDollars,
+  };
+
   if (config.globalKillSwitch) {
     await logMissedEntry(asset, "kill_switch_active", payload);
     return "blocked:kill_switch_active";
@@ -207,7 +271,7 @@ async function handleEntry(
     return "blocked:position_already_open";
   }
   try {
-    return await handleEntryLocked(asset, payload, config, creds);
+    return await handleEntryLocked(asset, payload, config, creds, logDraft);
   } finally {
     await releaseActionLock();
   }
@@ -217,7 +281,8 @@ async function handleEntryLocked(
   asset: Asset,
   payload: Partial<WebhookPayload>,
   config: Awaited<ReturnType<typeof getConfig>>,
-  creds: { apiKeyName: string; privateKeyPem: string }
+  creds: { apiKeyName: string; privateKeyPem: string },
+  logDraft: TradeLogDraft
 ): Promise<string> {
   const { data: dailyStats } = await getTodaysDailyStats();
   if (dailyStats?.killSwitchTriggered) {
@@ -265,6 +330,21 @@ async function handleEntryLocked(
     getProduct(creds, asset),
   ]);
 
+  logDraft.balance = {
+    futuresBuyingPower: balanceSummary.futuresBuyingPower,
+    totalUsdBalance: balanceSummary.totalUsdBalance,
+    overnightLiquidationBufferUsd: balanceSummary.overnightLiquidationBufferUsd,
+  };
+  logDraft.product = {
+    price: product.price,
+    baseIncrement: product.baseIncrement,
+    intradayLongMarginRate: product.intradayLongMarginRate,
+    intradayShortMarginRate: product.intradayShortMarginRate,
+    overnightLongMarginRate: product.overnightLongMarginRate,
+    overnightShortMarginRate: product.overnightShortMarginRate,
+    isSessionOpen: product.isSessionOpen,
+  };
+
   // Tech/AI/China follow real equity-index market hours, unlike BTC's
   // 24/7 session — this is separate from (and in addition to) our own
   // Pine-mirrored timing rules. btc4h skips this: it already has its own
@@ -294,6 +374,8 @@ async function handleEntryLocked(
     product.contractSize
   );
 
+  logDraft.sizing = { balanceUsed: balance, leverage, size: Number(size) };
+
   if (Number(size) <= 0) {
     await logError(
       `webhook:entry:${asset}`,
@@ -309,6 +391,13 @@ async function handleEntryLocked(
   let entryPrice = product.price;
   let bracketOrderId: string | null = null;
 
+  const tpDollars = payload.tpDollars ?? 0;
+  const slDollars = payload.slDollars ?? 0;
+  let tpPrice =
+    payload.side === "long" ? entryPrice + tpDollars : entryPrice - tpDollars;
+  let slPrice =
+    payload.side === "long" ? entryPrice - slDollars : entryPrice + slDollars;
+
   if (config.liveMode) {
     const entryOrder = await placeMarketOrder(creds, productId, orderSide, size);
     entryOrderId = entryOrder.orderId;
@@ -316,12 +405,9 @@ async function handleEntryLocked(
     const fill = await waitForFill(creds, entryOrder.orderId);
     entryPrice = fill.avgFilledPrice ?? product.price;
 
-    const tpDollars = payload.tpDollars ?? 0;
-    const slDollars = payload.slDollars ?? 0;
-    const tpPrice =
-      payload.side === "long" ? entryPrice + tpDollars : entryPrice - tpDollars;
-    const slPrice =
-      payload.side === "long" ? entryPrice - slDollars : entryPrice + slDollars;
+    // Recompute off the real fill price, not the pre-fill quote used above.
+    tpPrice = payload.side === "long" ? entryPrice + tpDollars : entryPrice - tpDollars;
+    slPrice = payload.side === "long" ? entryPrice - slDollars : entryPrice + slDollars;
 
     const bracket = await placeBracketOrder(
       creds,
@@ -333,6 +419,16 @@ async function handleEntryLocked(
     );
     bracketOrderId = bracket.orderId;
   }
+
+  logDraft.order = {
+    entryOrderId,
+    entryPrice,
+    bracketOrderId,
+    tpPrice,
+    slPrice,
+    exitOrderId: null,
+    exitPrice: null,
+  };
 
   const positionDoc: PositionDoc = {
     asset,
@@ -365,6 +461,7 @@ async function handleEntryLocked(
     liquidationVerified: !config.liveMode,
   };
   const positionRef = await positionsCol.add(positionDoc);
+  logDraft.positionId = positionRef.id;
 
   const tradeDoc: TradeDoc = {
     positionId: positionRef.id,
@@ -386,8 +483,17 @@ async function handleEntryLocked(
 async function handleFlatten(
   asset: Asset,
   config: Awaited<ReturnType<typeof getConfig>>,
-  creds: { apiKeyName: string; privateKeyPem: string }
+  creds: { apiKeyName: string; privateKeyPem: string },
+  logDraft: TradeLogDraft
 ): Promise<string> {
+  logDraft.config = {
+    liveMode: config.liveMode,
+    globalKillSwitch: config.globalKillSwitch,
+    assetKillSwitch: config.assetKillSwitches[asset],
+    sessionLossLimitDollars: config.sessionLossLimitDollars,
+    tradableBalanceDollars: config.tradableBalanceDollars,
+  };
+
   // Reuses the entry lock rather than a separate one: only one position
   // exists system-wide at a time, so serializing every position-mutating
   // action (entry or flatten) behind a single lock is sufficient and avoids
@@ -399,8 +505,20 @@ async function handleFlatten(
     return "blocked:action_in_progress";
   }
   try {
-    const closed = await closeOpenPosition(asset, config, creds);
-    return closed ? `flattened:${config.liveMode ? "live" : "dry_run"}` : "no_open_position";
+    const result = await closeOpenPosition(asset, config, creds);
+    logDraft.positionId = result.positionId;
+    logDraft.order = {
+      entryOrderId: null,
+      entryPrice: null,
+      bracketOrderId: null,
+      tpPrice: null,
+      slPrice: null,
+      exitOrderId: result.exitOrderId,
+      exitPrice: result.exitPrice,
+    };
+    return result.closed
+      ? `flattened:${config.liveMode ? "live" : "dry_run"}`
+      : "no_open_position";
   } finally {
     await releaseActionLock();
   }

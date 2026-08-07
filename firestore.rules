@@ -38,6 +38,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /tradeLogs/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
