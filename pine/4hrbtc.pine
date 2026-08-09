@@ -1,147 +1,94 @@
 //@version=6
-strategy("AY Momentum BTC 4H vMax2", overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=3883, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=100, margin_long=0, margin_short=0)
+strategy("BTC4H GENESIS", overlay=true, initial_capital=1000, default_qty_type=strategy.cash, default_qty_value=3895, calc_on_every_tick=false, process_orders_on_close=true, pyramiding=100, margin_long=0, margin_short=0)
 
-// ── SETTINGS ──
-// Re-optimized on 4h bars, Jul 2025 – Jul 2026 (2,242 usable bars), at $3,883
-// notional with an $8 round-trip fee, maximizing NET PnL.
+// ══════════════════════════════════════════════════════════════════
+// BTC4H GENESIS — LIVE WEBHOOK VERSION.
+// pyramiding=100 and no posOpen gate: the Firebase server enforces
+// one position at a time, accepting the first alert and rejecting the
+// rest. This script's Strategy Tester output is NOT meaningful — use
+// the SEQUENTIAL BACKTEST copy for equity curves.
 //
-// Engine validated against the Strategy Tester: 45 trades, gross $4,636 in
-// simulation vs $4,551 reported (1.9% apart, identical trade count).
-tpDollars     = input.float(3600.0, "Take Profit ($ price move)", minval=0.5, step=50)
-slDollars     = input.float(6500.0, "Stop Loss ($ price move)", minval=0.5, step=50)
-momBars       = input.int(1, "Momentum lookback (bars; 1 = 4h)", minval=1)
-atrLen        = input.int(14, "ATR length for momentum normalization", minval=2)
-minMomATR     = input.float(0.85, "Min |momentum| in ATRs to enter", minval=0, step=0.05)
-maxZDist      = input.float(1.75, "Max |close - VWAP| in sigma (0 = off)", minval=0, step=0.25)
-zLookback     = input.int(50, "Sigma lookback for distance filter (bars)", minval=20)
-useShock      = input.bool(false, "Use shock-candle filter (tested: costs ~$820/yr here)")
-maxCandleMove = input.float(4500.0, "Max Single-Candle Range ($)", minval=0, step=100)
-shockBars     = input.int(6, "Shock Window (bars, incl. trigger)", minval=1)
-showDebug     = input.bool(true, "Show entry/blocked labels")
+// ATR-normalised momentum + VWAP-distance filter, with PERCENTAGE-OF-
+// PRICE brackets (TP 5%, SL 9%) that never need manual adjustment as
+// BTC's price level changes.
+//
+//   91 clusters, 14 losses | PF 2.86 | 84.6% wins | 29 trades/yr
+//   2025 $87/trade (7 losses) | 2026 $98 (7 losses) -> ratio 1.13
+//   FIXED SIZE:  MEDIAN $2,736 | p10 $1,395 | P(neg) 0.6%
+//   COMPOUNDED:  MEDIAN $7,761 | p10 $759 | P(ruin) 0.9%
+//
+// ⚠ SERVER NOTE: tpDollars and slDollars in the payload are computed
+// from the ENTRY BAR's close and latched. The server must place the
+// bracket at exactly these values — do NOT recompute them from a
+// later price, or live behaviour will diverge from the backtest.
+//
+// Plan on ~$2,700 (the median), not $3,981 (the realised sequence,
+// which sat near the 90th percentile).
+// ══════════════════════════════════════════════════════════════════
 
-// ── STALE-POSITION RULE ──
-// After staleBars, the take profit drops from tpDollars to staleTpDollars so a
-// long-running trade can close on a smaller move. 20 days = 120 bars on 4h
-// (6 bars/day). Backtested cost: -$110/yr (2 trades affected).
-staleBars     = input.int(120, "Reduce TP after this many bars held (120 = 20 days)", minval=1, group="Stale position")
-staleTpDollars= input.float(1000.0, "Reduced Take Profit once stale ($)", minval=0.5, step=50, group="Stale position")
+tpPct      = input.float(5.0, "Take Profit (% of entry price)", minval=0.1, step=0.1)
+slPct      = input.float(9.0, "Stop Loss (% of entry price)", minval=0.1, step=0.1)
+atrLen     = input.int(10, "ATR length (10 bars = 40h)", minval=2)
+minMomATR  = input.float(0.95, "Min |momentum| in ATRs to enter", minval=0, step=0.05)
+momBars    = input.int(1, "Momentum lookback (bars; 1 = 4h)", minval=1)
+maxZDist   = input.float(1.50, "Max |close - VWAP| in sigma (0 = off)", minval=0, step=0.05)
+zLookback  = input.int(75, "Sigma lookback (75 bars = 300h)", minval=20)
+showDebug  = input.bool(true, "Show entry labels")
 
-// Maintenance blackout: Friday 4-6pm ET halt. Entry-only; an open position
-// rides through. Costs ~$2/yr — kept as execution hygiene, not for edge.
 useMaintBlock = input.bool(true, "Block entries during Friday maintenance", group="Maintenance")
 friBlockStart = input.int(16, "Friday block start hour (ET)", minval=0, maxval=23, group="Maintenance")
 friBlockEnd   = input.int(19, "Friday block end hour (ET)", minval=0, maxval=23, group="Maintenance")
 
-webhookSecret = input.string("519031d5e6863d4f426fe1d87e6ccd4370e591890ace66c1", "Webhook Secret (Firebase)", group="Webhook")
+webhookSecret = input.string("519031d5e6863d4f426fe1d87e6ccd4370e591890ace66c1", "Webhook Secret", group="Webhook")
 
-// ── 4-HOUR TIMEFRAME GUARD ──
 if barstate.isfirst and timeframe.in_seconds() != 4 * 60 * 60
     runtime.error("This strategy is designed for a 4-hour chart.")
 
-// ── DAILY VWAP ──
-[vwapVal, upperBand, lowerBand] = ta.vwap(hlc3, timeframe.change("D"), 2.0)
+[vwapVal, _u, _l] = ta.vwap(hlc3, timeframe.change("D"), 2.0)
 plot(vwapVal, "VWAP", color=#5D3FD3, linewidth=2)
-plot(upperBand, "VWAP Upper (+2σ)", color=#5D3FD3, linewidth=1)
-plot(lowerBand, "VWAP Lower (−2σ)", color=#5D3FD3, linewidth=1)
 
-// ── ENTRY SIGNAL: ATR-NORMALIZED 4-HOUR MOMENTUM ──
-// Raw dollar momentum goes stale as price level and volatility drift; dividing
-// by ATR keeps the threshold meaningful across regimes. ta.atr uses Wilder's
-// RMA smoothing (alpha = 1/14), NOT a simple average — a distinction worth
-// ~8.8% in ATR level and enough to shift which bars clear the threshold.
 atrVal = ta.atr(atrLen)
 momATR = (not na(atrVal) and atrVal > 0) ? (close - close[momBars]) / atrVal : 0.0
-plot(momATR, "momentum_ATR", display=display.data_window)
+plot(momATR, "momATR", display=display.data_window)
 
-// ── VWAP DISTANCE FILTER — the single most important filter here ──
-// Removing it turns the year negative. Sigma is a rolling stdev of
-// (close - VWAP), NOT the plotted session bands, which are computed
-// differently by ta.vwap — don't read the bands as showing where this fires.
 dev = close - vwapVal
 devStd = ta.stdev(dev, zLookback)
 zDist = (not na(devStd) and devStd > 0) ? math.abs(dev) / devStd : 0.0
 zOK = maxZDist <= 0 or na(devStd) or zDist <= maxZDist
 
-// ── SHOCK CANDLE FILTER (off by default) ──
-// Costs money here — the sigma filter already vetoes the extended conditions
-// it was catching, so running both is redundant.
-biggestCandle = ta.highest(high - low, shockBars)
-shockOK = not useShock or biggestCandle <= maxCandleMove
-
-// ── MAINTENANCE BLACKOUT (Eastern Time, at bar close) ──
 etHour = hour(time_close, "America/New_York")
 etDow  = dayofweek(time_close, "America/New_York")
-inMaint = useMaintBlock and etDow == dayofweek.friday and etHour >= friBlockStart and etHour <= friBlockEnd
-maintOK = not inMaint
+maintOK = not (useMaintBlock and etDow == dayofweek.friday and etHour >= friBlockStart and etHour <= friBlockEnd)
 
-// ── SIGNALS AND ORDERS ──
-// maintOK/posOpen intentionally left out of the gate below — entry timing
-// (the Friday maintenance blackout) and the single-open-position rule are
-// both enforced server-side (Firebase) now, exactly like every other asset.
-// Pine may re-propose an entry the server ends up rejecting (a position is
-// already open for real, or the maintenance window is active) — that's
-// expected and harmless; the server is the sole authority on whether an
-// entry actually happens. maintOK/posOpen are still computed above for the
-// debug labels only.
 posOpen = strategy.position_size != 0
 
-longEntry  = shockOK and zOK and momATR >= minMomATR
-shortEntry = shockOK and zOK and momATR <= -minMomATR
+longEntry  = zOK and maintOK and momATR >= minMomATR
+shortEntry = zOK and maintOK and momATR <= -minMomATR
 
-longAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC4H","action":"entry","side":"long","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
-shortAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC4H","action":"entry","side":"short","tpDollars":' + str.tostring(tpDollars) + ',"slDollars":' + str.tostring(slDollars) + '}'
+// ── PERCENTAGE BRACKETS, LATCHED AT ENTRY ──
+var float lockedEntry = na
+if (longEntry or shortEntry) and not posOpen
+    lockedEntry := close
+
+refPrice  = posOpen and not na(lockedEntry) ? lockedEntry : close
+tpDollars = refPrice * tpPct / 100.0
+slDollars = refPrice * slPct / 100.0
+plot(tpDollars, "tp$", display=display.data_window)
+plot(slDollars, "sl$", display=display.data_window)
+
+longAlertMsg   = '{"secret":"' + webhookSecret + '","asset":"BTC4H","action":"entry","side":"long","tpDollars":' + str.tostring(tpDollars, "#.##") + ',"slDollars":' + str.tostring(slDollars, "#.##") + '}'
+shortAlertMsg  = '{"secret":"' + webhookSecret + '","asset":"BTC4H","action":"entry","side":"short","tpDollars":' + str.tostring(tpDollars, "#.##") + ',"slDollars":' + str.tostring(slDollars, "#.##") + '}'
 ignoreAlertMsg = '{"secret":"' + webhookSecret + '","asset":"BTC4H","action":"ignore"}'
 
-// ── HOLD DURATION AND EFFECTIVE TAKE PROFIT ──
-// strategy.exit is re-issued every bar with the same ID, which UPDATES the
-// resting bracket rather than adding a second one. So simply swapping the
-// profit value once the trade goes stale is enough to tighten the target.
-entryBarIdx = strategy.opentrades > 0 ? strategy.opentrades.entry_bar_index(strategy.opentrades - 1) : na
-barsHeld = (posOpen and not na(entryBarIdx)) ? bar_index - entryBarIdx : 0
-isStale = posOpen and barsHeld >= staleBars
-effectiveTp = isStale ? staleTpDollars : tpDollars
-plot(barsHeld, "bars_held", display=display.data_window)
-
-// ── DEBUG LABELS ──
-momTxt = "mom " + str.tostring(momATR, "#.##") + " ATR"
-signalNow = momATR >= minMomATR or momATR <= -minMomATR
-blockedNow = signalNow and not (longEntry or shortEntry)
-zBlockNow = blockedNow and not posOpen and maintOK and not zOK
-zBlockNew = zBlockNow and not zBlockNow[1]
-shockBlockNow = blockedNow and not posOpen and maintOK and zOK and not shockOK
-shockBlockNew = shockBlockNow and not shockBlockNow[1]
-staleNew = isStale and not isStale[1]
-
 if showDebug and longEntry
-    label.new(bar_index, low, "LONG ✓ " + momTxt, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
-
+    label.new(bar_index, low, "LONG " + str.tostring(momATR, "#.##"), style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny)
 if showDebug and shortEntry
-    label.new(bar_index, high, "SHORT ✓ " + momTxt, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+    label.new(bar_index, high, "SHORT " + str.tostring(momATR, "#.##"), style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
 
-if showDebug and staleNew
-    label.new(bar_index, high, "STALE " + str.tostring(barsHeld, "#") + "b → TP $" + str.tostring(staleTpDollars, "#"), style=label.style_label_down, color=color.orange, textcolor=color.white, size=size.small)
-
-if showDebug and zBlockNew
-    label.new(bar_index, momATR > 0 ? low : high, "BLOCKED: stretched " + str.tostring(zDist, "#.##") + "σ from VWAP", style=momATR > 0 ? label.style_label_up : label.style_label_down, color=color.blue, textcolor=color.white, size=size.small)
-
-if showDebug and shockBlockNew
-    label.new(bar_index, momATR > 0 ? low : high, "BLOCKED: candle > $" + str.tostring(maxCandleMove, "#"), style=momATR > 0 ? label.style_label_up : label.style_label_down, color=color.purple, textcolor=color.white, size=size.small)
-
-// ── ORDERS ──
 if longEntry
     strategy.entry("Long", strategy.long, alert_message=longAlertMsg)
-
 if shortEntry
     strategy.entry("Short", strategy.short, alert_message=shortAlertMsg)
 
-// ── TP/SL (profit target swaps to the reduced value once stale) ──
-// alert_message is always "ignore" here — this fires purely so TradingView's
-// own backtest visualization stays accurate for these fills. The real
-// enforcement (including the stale-position TP reduction) is entirely
-// server-side now: Coinbase's exchange-side bracket order for live, tracked
-// off the position's real entry time and amended once stale, or the
-// simulated watcher for dry-run. Never Pine, since it needs to survive
-// independent of Pine's own bar-based tracking while a position is held for
-// weeks.
-strategy.exit("Long Exit", from_entry="Long", profit=effectiveTp / syminfo.mintick, loss=slDollars / syminfo.mintick, alert_message=ignoreAlertMsg)
-strategy.exit("Short Exit", from_entry="Short", profit=effectiveTp / syminfo.mintick, loss=slDollars / syminfo.mintick, alert_message=ignoreAlertMsg)
+strategy.exit("Long Exit", from_entry="Long", profit=tpDollars / syminfo.mintick, loss=slDollars / syminfo.mintick, alert_message=ignoreAlertMsg)
+strategy.exit("Short Exit", from_entry="Short", profit=tpDollars / syminfo.mintick, loss=slDollars / syminfo.mintick, alert_message=ignoreAlertMsg)
