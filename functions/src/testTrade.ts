@@ -75,7 +75,6 @@ export const testLiveShortEntry = onCall(
       slDollars: null,
       bracketOrderId: null,
       entryOrderId: order.orderId,
-      staleAmended: false,
       // This button already bypasses kill switches and trading-window
       // checks by design (see the comment above) — no bracket/TP/SL either,
       // so there's nothing for the liquidation watcher to meaningfully

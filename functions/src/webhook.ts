@@ -449,7 +449,6 @@ async function handleEntryLocked(
     slDollars: payload.slDollars ?? null,
     bracketOrderId,
     entryOrderId,
-    staleAmended: false,
     // The liquidation-safety check runs asynchronously now (see
     // liquidationWatcher.ts) rather than blocking this response — Coinbase's
     // balance-settlement time isn't bounded tightly enough to poll for

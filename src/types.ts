@@ -8,7 +8,7 @@ export const ASSET_LABELS: Record<Asset, string> = {
   tech: "Tech100",
   ai: "AI10",
   china: "China10",
-  btc4h: "BTC 4H",
+  btc4h: "BTC Genesis",
 };
 
 export interface AssetTradingWindow {

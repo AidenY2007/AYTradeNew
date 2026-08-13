@@ -5,7 +5,6 @@ import { getConfig } from "./config";
 import { closeOpenPosition } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
 import { getProduct } from "./coinbase/client";
-import { effectiveTpDollars } from "./staleTp";
 import { PositionDoc } from "./types";
 
 // Dry-run positions never get a real Coinbase bracket order, so nothing
@@ -45,7 +44,7 @@ export const watchSimulatedTpSl = onSchedule(
       return;
     }
 
-    const tpDollars = effectiveTpDollars(position);
+    const tpDollars = position.tpDollars;
     const hitTp =
       tpDollars != null &&
       (position.side === "long"

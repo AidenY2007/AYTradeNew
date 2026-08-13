@@ -8,7 +8,6 @@ export { resetDailyStats } from "./dailyLoss";
 export { flattenOverduePositions } from "./flattenScheduler";
 export { monitorSessionLoss } from "./sessionLossMonitor";
 export { watchSimulatedTpSl } from "./simulatedTpSlWatcher";
-export { watchStaleTp } from "./staleTpWatcher";
 export { watchLiquidationSafety } from "./liquidationWatcher";
 export { syncLiveBracketFills } from "./liveBracketSync";
 export { login } from "./auth";

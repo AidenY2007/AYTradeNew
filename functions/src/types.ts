@@ -76,10 +76,6 @@ export interface PositionDoc {
   slDollars: number | null;
   bracketOrderId: string | null;
   entryOrderId: string | null;
-  // Whether the live Coinbase bracket order's TP has already been amended
-  // down to the stale-position level (see staleTp.ts) — only ever set true
-  // for live btc4h positions; meaningless (stays false) for everything else.
-  staleAmended: boolean;
   // Buying power immediately before this entry — used by
   // liquidationWatcher.ts to detect once Coinbase's balance summary has
   // actually settled to reflect this position's margin usage (a fresh read
