@@ -55,6 +55,10 @@ export function testLiveShortEntry() {
   return httpsCallable(functions, "testLiveShortEntry")({});
 }
 
+export function testLiveLongEntry() {
+  return httpsCallable(functions, "testLiveLongEntry")({});
+}
+
 export function closeTestPosition() {
   return httpsCallable(functions, "closeTestPosition")({});
 }

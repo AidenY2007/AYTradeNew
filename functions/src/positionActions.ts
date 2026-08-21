@@ -5,14 +5,66 @@ import {
   PRODUCT_IDS,
   getProduct,
   placeMarketOrder,
+  placeBracketOrder,
   cancelOrder,
   getOrder,
   waitForFill,
   CoinbaseCredentials,
 } from "./coinbase/client";
+import { formatPrice } from "./sizing";
 
 const positionsCol = db.collection("positions");
 const tradesCol = db.collection("trades");
+
+// Places the closing bracket (TP/SL) order for a position whose entry has
+// already filled. If Coinbase rejects the bracket for any reason (the
+// INVALID_PRICE_PRECISION bug this was written to guard against, a network
+// blip, a rate limit — anything), the entry is left open on Coinbase with no
+// stop-loss attached, which is worse than not being open at all: a
+// duplicate webhook retry would see no Firestore record yet and pile on
+// more entries on top of it, which is exactly how one bad bracket price
+// turned into four unprotected live buys in production on 2026-08-21. Fails
+// safe by immediately unwinding the entry rather than leaving it exposed,
+// and throws either way so the caller's own error handling (logging,
+// tradeLogs, etc.) still runs.
+export async function placeBracketWithFailsafe(
+  creds: CoinbaseCredentials,
+  productId: string,
+  closingSide: "BUY" | "SELL",
+  size: string,
+  tpPrice: number,
+  slPrice: number,
+  quoteIncrement: number,
+  entryOrderId: string | null,
+  entryPrice: number
+): Promise<string> {
+  try {
+    const bracket = await placeBracketOrder(
+      creds,
+      productId,
+      closingSide,
+      size,
+      formatPrice(tpPrice, quoteIncrement),
+      formatPrice(slPrice, quoteIncrement)
+    );
+    return bracket.orderId;
+  } catch (bracketErr) {
+    let closeNote: string;
+    try {
+      const closeOrder = await placeMarketOrder(creds, productId, closingSide, size);
+      const closeFill = await waitForFill(creds, closeOrder.orderId);
+      closeNote = ` — auto-closed at ${closeFill.avgFilledPrice ?? "unknown price"} (order ${closeOrder.orderId})`;
+    } catch (closeErr) {
+      closeNote =
+        ` — FAILED TO AUTO-CLOSE: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}. ` +
+        "Position is likely still open and UNPROTECTED on Coinbase — check manually.";
+    }
+    throw new Error(
+      `Bracket order failed after entry filled (entryOrderId=${entryOrderId}, entryPrice=${entryPrice})${closeNote}. ` +
+        `Original error: ${bracketErr instanceof Error ? bracketErr.message : String(bracketErr)}`
+    );
+  }
+}
 
 function dailyStatsRef() {
   const key = new Intl.DateTimeFormat("en-CA", {

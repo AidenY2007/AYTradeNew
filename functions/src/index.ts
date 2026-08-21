@@ -20,4 +20,4 @@ export {
   resetTradingWindowsToDefault,
 } from "./settings";
 export { verifyCoinbaseAccess, listFuturesProducts } from "./verify";
-export { testLiveShortEntry, closeTestPosition } from "./testTrade";
+export { testLiveShortEntry, testLiveLongEntry, closeTestPosition } from "./testTrade";

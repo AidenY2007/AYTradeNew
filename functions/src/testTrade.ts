@@ -3,7 +3,7 @@ import { onCall, HttpsError } from "firebase-functions/https";
 import { db, OWNER_UID, Asset } from "./admin";
 import { coinbaseApiKeyName, coinbaseApiPrivateKey } from "./secrets";
 import { getConfig } from "./config";
-import { closeOpenPosition } from "./positionActions";
+import { closeOpenPosition, placeBracketWithFailsafe } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
 import {
   PRODUCT_IDS,
@@ -99,6 +99,105 @@ export const testLiveShortEntry = onCall(
     await tradesCol.add(tradeDoc);
 
     return { ok: true, entryPrice, orderId: order.orderId };
+  }
+);
+
+// Placeholder TP/SL for the long test below, in dollars of price move — not
+// tied to any strategy, just enough to exercise a real bracket order.
+const TEST_TP_DOLLARS = 50;
+const TEST_SL_DOLLARS = 100;
+
+// Same manual live-order test as testLiveShortEntry above, but long side and
+// WITH a real bracket (TP/SL) order attached via the same
+// placeBracketWithFailsafe path the webhook uses — this is what actually
+// exercises the bracket-price-precision fix against Coinbase's live API,
+// which the short-side test (no bracket at all) doesn't touch.
+export const testLiveLongEntry = onCall(
+  { secrets: [coinbaseApiKeyName, coinbaseApiPrivateKey] },
+  async (request) => {
+    requireOwner(request.auth);
+
+    const openSnap = await positionsCol
+      .where("status", "==", "open")
+      .limit(1)
+      .get();
+    if (!openSnap.empty) {
+      throw new HttpsError(
+        "failed-precondition",
+        "A position is already open — close it before testing."
+      );
+    }
+
+    const config = await getConfig();
+    const creds = {
+      apiKeyName: coinbaseApiKeyName.value(),
+      privateKeyPem: coinbaseApiPrivateKey.value(),
+    };
+    const productId = PRODUCT_IDS.btc;
+    const product = await getProduct(creds, "btc");
+
+    const size = "1"; // exactly 1 contract = 0.01 BTC, fixed for this test
+    const order = await placeMarketOrder(creds, productId, "BUY", size);
+    const fill = await waitForFill(creds, order.orderId);
+    const entryPrice = fill.avgFilledPrice ?? product.price;
+
+    const tpPrice = entryPrice + TEST_TP_DOLLARS;
+    const slPrice = entryPrice - TEST_SL_DOLLARS;
+    const bracketOrderId = await placeBracketWithFailsafe(
+      creds,
+      productId,
+      "SELL",
+      size,
+      tpPrice,
+      slPrice,
+      product.quoteIncrement,
+      order.orderId,
+      entryPrice
+    );
+
+    const positionDoc: PositionDoc = {
+      asset: "btc",
+      side: "long",
+      size: 1,
+      contractSize: product.contractSize,
+      feePerContract: config.feesPerContract.btc,
+      leverage: 1,
+      entryPrice,
+      entryTime: Timestamp.now(),
+      exitPrice: null,
+      exitTime: null,
+      status: "open",
+      mode: "live",
+      pnl: null,
+      fee: null,
+      tpDollars: TEST_TP_DOLLARS,
+      slDollars: TEST_SL_DOLLARS,
+      bracketOrderId,
+      entryOrderId: order.orderId,
+      // This button already bypasses kill switches and trading-window
+      // checks by design (see testLiveShortEntry above) — skip the
+      // liquidation-safety check the same way; a 1-contract test position
+      // is never realistically close to real liquidation risk.
+      preEntryBuyingPower: null,
+      liquidationVerified: true,
+    };
+    const positionRef = await positionsCol.add(positionDoc);
+
+    const tradeDoc: TradeDoc = {
+      positionId: positionRef.id,
+      asset: "btc",
+      leg: "entry",
+      side: "long",
+      size: 1,
+      price: entryPrice,
+      time: Timestamp.now(),
+      mode: "live",
+      orderId: order.orderId,
+      raw: null,
+    };
+    await tradesCol.add(tradeDoc);
+
+    return { ok: true, entryPrice, orderId: order.orderId, bracketOrderId };
   }
 );
 

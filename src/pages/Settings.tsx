@@ -10,6 +10,7 @@ import {
   verifyCoinbaseAccess,
   listFuturesProducts,
   testLiveShortEntry,
+  testLiveLongEntry,
   closeTestPosition,
 } from "../api";
 import type { Asset, AssetTradingWindow, PositionDoc, SystemConfig } from "../types";
@@ -228,6 +229,19 @@ export function SettingsPage() {
     }
   }
 
+  async function enterTestTradeLong() {
+    if (!window.confirm("Are u sure u want to enter?")) return;
+    setTestTradeBusy(true);
+    setTestTradeError(null);
+    try {
+      await testLiveLongEntry();
+    } catch (err) {
+      setTestTradeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestTradeBusy(false);
+    }
+  }
+
   async function closeTestTrade() {
     setTestTradeBusy(true);
     setTestTradeError(null);
@@ -395,10 +409,12 @@ export function SettingsPage() {
       <div className="card" style={{ marginTop: 16, marginBottom: 24 }}>
         <div className="card-label">Test Live Trade</div>
         <p style={{ fontSize: 13, color: "var(--text-dim)", margin: "0 0 12px" }}>
-          Places one real short contract on BTC Nano Perp (0.01 BTC notional)
+          Places one real contract on BTC Nano Perp (0.01 BTC notional)
           directly on Coinbase — real money, independent of the dry-run
-          toggle and bypassing kill switches and trading-window checks. No
-          take-profit/stop-loss is attached; use Close Position to exit.
+          toggle and bypassing kill switches and trading-window checks. Short
+          has no take-profit/stop-loss attached (use Close Position to exit);
+          Long attaches a real bracket order, exercising the same order path
+          a live webhook entry uses.
         </p>
         {openPosition ? (
           <button
@@ -412,14 +428,24 @@ export function SettingsPage() {
               : `Close Position (${ASSET_LABELS[openPosition.asset]} ${openPosition.side.toUpperCase()})`}
           </button>
         ) : (
-          <button
-            className="settings-save"
-            style={{ background: "var(--red)" }}
-            onClick={enterTestTrade}
-            disabled={testTradeBusy}
-          >
-            {testTradeBusy ? "Placing…" : "Place Test Short — 1 Contract BTC (LIVE)"}
-          </button>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              className="settings-save"
+              style={{ background: "var(--red)" }}
+              onClick={enterTestTrade}
+              disabled={testTradeBusy}
+            >
+              {testTradeBusy ? "Placing…" : "Place Test Short — 1 Contract BTC (LIVE)"}
+            </button>
+            <button
+              className="settings-save"
+              style={{ background: "var(--green)" }}
+              onClick={enterTestTradeLong}
+              disabled={testTradeBusy}
+            >
+              {testTradeBusy ? "Placing…" : "Place Test Long — 1 Contract BTC (LIVE, w/ bracket)"}
+            </button>
+          </div>
         )}
         {testTradeError && (
           <div style={{ color: "var(--red)", fontSize: 13, marginTop: 10 }}>

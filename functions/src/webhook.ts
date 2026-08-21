@@ -17,11 +17,10 @@ import {
   maxLeverageForSide,
   maxOvernightLeverageForSide,
   placeMarketOrder,
-  placeBracketOrder,
   waitForFill,
 } from "./coinbase/client";
 import { computeMaxContractsSize } from "./sizing";
-import { closeOpenPosition } from "./positionActions";
+import { closeOpenPosition, placeBracketWithFailsafe } from "./positionActions";
 import { acquireActionLock, releaseActionLock } from "./lock";
 import {
   WebhookPayload,
@@ -409,15 +408,17 @@ async function handleEntryLocked(
     tpPrice = payload.side === "long" ? entryPrice + tpDollars : entryPrice - tpDollars;
     slPrice = payload.side === "long" ? entryPrice - slDollars : entryPrice + slDollars;
 
-    const bracket = await placeBracketOrder(
+    bracketOrderId = await placeBracketWithFailsafe(
       creds,
       productId,
       closingSide,
       size,
-      tpPrice.toFixed(8),
-      slPrice.toFixed(8)
+      tpPrice,
+      slPrice,
+      product.quoteIncrement,
+      entryOrderId,
+      entryPrice
     );
-    bracketOrderId = bracket.orderId;
   }
 
   logDraft.order = {
